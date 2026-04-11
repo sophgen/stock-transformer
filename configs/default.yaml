@@ -1,0 +1,44 @@
+# Default experiment config (copy and edit for runs).
+
+symbol: "IBM"
+timeframes:
+  - "1min"
+  - "60min"
+  - "daily"
+  - "monthly"
+
+# Intraday: Alpha Vantage returns one month per request when month is set.
+# Omit `month` to use latest compact/full window per API.
+intraday_month: null  # e.g. "2024-01" or null
+
+lookback: 32
+train_bars: 500
+val_bars: 100
+test_bars: 100
+step_bars: 100
+
+# Data
+use_adjusted_daily: true
+use_adjusted_monthly: true
+intraday_extended_hours: false
+intraday_outputsize: "full"
+daily_outputsize: "full"
+cache_dir: "data"
+
+# Model
+d_model: 64
+nhead: 4
+num_layers: 2
+dim_feedforward: 128
+dropout: 0.1
+epochs: 5
+batch_size: 32
+learning_rate: 0.001
+device: "cpu"
+seed: 42
+
+# Threshold for binary prediction from probability (tuned on val in runner)
+default_threshold: 0.5
+
+# Artifacts
+artifacts_dir: "artifacts"
