@@ -1,12 +1,20 @@
 # Stock Transformer Cross-Sectional Backtest Plan
 
+## Current repository vs this plan (living status)
+
+The codebase today is a **working single-symbol, multi-timeframe** pipeline: one `symbol` in YAML (e.g. `IBM` in `configs/default.yaml`), Alpha Vantage ingestion via the **REST client** in `src/stock_transformer/data/alphavantage.py` (with raw + canonical CSV caching), tokenized OHLCV sequences in `src/stock_transformer/features/sequences.py`, a causal `CandleTransformer` that predicts the **next candle** (regression + direction) in `src/stock_transformer/model/transformer_classifier.py`, and walk-forward evaluation in `src/stock_transformer/backtest/runner.py` with per-fold classification/regression metrics in `src/stock_transformer/backtest/metrics.py`.
+
+**Not yet implemented** relative to this document: multi-ticker universe config (`configs/universe.yaml`), partitioned multi-symbol parquet store, global timestamp alignment across symbols, cross-sectional labels (`labels/`), tensor shape `[lookback, num_symbols, features]`, cross-sectional attention / ranker model, ranking metrics (Spearman, NDCG, etc.), and point-in-time universe membership tables. The sections below remain the **target architecture**; milestones should explicitly include refactors that **reuse** canonicalization, throttling, and walk-forward *patterns* from the current code where possible.
+
+**End-state you are driving toward:** train on **multiple tickers** (shared history, aligned timestamps, proper masking) and use that model to score or rank performance—including a practical case where a **small set of liquid “predictor” symbols** informs **MicroStrategy (`MSTR`)** next-period direction or relative return. The cross-sectional universe design is the general case; a **tiny universe** (MSTR + 2–3 inputs) is a valid first multi-ticker milestone before scaling to a broad basket.
+
 ## Scope and fixed decisions
-- **Prediction target:** next-candle **cross-sectional ticker performance** over a universe, not standalone single-ticker direction.
+- **Prediction target:** next-candle **cross-sectional ticker performance** over a universe, not standalone single-ticker direction. *(Current code: single-ticker next-candle OHLCV + direction; migrate toward relative-return / ranking targets.)*
 - **Primary label:** next-period **relative return** for each ticker versus the universe at the same timestamp.
 - **Initial prediction task:** rank or score all tickers at time `t` by expected return from `t` to `t+1`.
 - **Backtest mode:** forecast evaluation only for now; no position sizing or PnL simulation in v1.
-- **Timeframes:** minute, hour, day, month candles (hour mapped to intraday `interval=60min`).
-- **Data source:** AlphaVantage via MCP (`TOOL_LIST` -> `TOOL_GET` -> `TOOL_CALL`).
+- **Timeframes:** minute, hour, day, month candles (hour mapped to intraday `interval=60min`). *(Current code also supports weekly; monthly is in config—align naming with AV endpoints.)*
+- **Data source:** Alpha Vantage. **Implemented:** direct REST API + file cache (see `AlphaVantageClient`). **Optional alignment:** the same endpoints can be driven via MCP (`TOOL_LIST` → `TOOL_GET` → `TOOL_CALL`) for schema discovery in tool-first workflows; the canonical candle schema should stay identical either way.
 - **System design constraint:** the full modeling pipeline must be **multi-ticker end-to-end**. Inputs, labels, splits, normalization, and metrics are defined over the whole ticker universe at each timestamp.
 
 ## Objective definition
@@ -42,21 +50,21 @@
   - Delistings.
 - Define a configurable **coverage threshold** for each timestamp so the model only trains on cross-sections with enough live tickers present.
 
-## Project scaffold (greenfield)
-- Expand [README.md](README.md) with architecture, assumptions, data limitations, and reproducibility commands.
-- Add Python package layout under `src/stock_transformer/`:
-  - `data/` for ingestion, canonicalization, universe membership, and timestamp alignment.
-  - `features/` for per-ticker features, cross-sectional features, masking, and tensor assembly.
-  - `labels/` for relative-return target construction and rank/bucket generation.
-  - `model/` for Transformer ranker/scorer with temporal plus cross-sectional attention.
-  - `backtest/` for walk-forward fold generation and evaluation harness.
-  - `configs/` for YAML/JSON experiment configs, including universe, horizon, and target definitions.
-- Add `tests/` for leakage guards, label construction, masking behavior, fold correctness, and rank metric validation.
+## Project scaffold (greenfield vs implemented)
+- Expand [README.md](README.md) with architecture, assumptions, data limitations, and reproducibility commands. *(README still describes the single-symbol multi-timeframe autoregressive model; update when multi-ticker lands.)*
+- Python package layout under `src/stock_transformer/`:
+  - `data/` — **partially done:** ingestion, canonicalization, caching; **to add:** universe membership, multi-symbol batch fetch orchestration, global timestamp alignment outputs.
+  - `features/` — **done for one symbol:** multi-timeframe tokens; **to add:** per-ticker panels, cross-sectional features, universe tensor assembly `[L, S, F]`, symbol masks.
+  - `labels/` — **not present:** add relative-return targets, rank/bucket labels.
+  - `model/` — **done:** `CandleTransformer` (temporal-only, one stream of tokens); **to add:** ranker/scorer with cross-sectional mixing; keep baselines alongside.
+  - `backtest/` — **done:** walk-forward by sample index + single-asset metrics; **to extend:** folds over global time, ranking metrics, per-symbol diagnostics in a universe.
+  - `configs/` — **done:** `default.yaml` for single symbol; **to add:** `universe.yaml` (or equivalent section) for ticker lists, coverage thresholds, and target definition.
+- `tests/` — **present:** sequences, walk-forward, synthetic runner, data integrity; **to add:** leakage guards, cross-sectional label tests, masking/coverage, rank metrics.
 
-## AlphaVantage MCP data plan
-- Discover tool availability once per run with `TOOL_LIST`.
-- Pull schemas dynamically with `TOOL_GET` before each concrete data request.
-- Use these primary endpoints:
+## Alpha Vantage data plan (REST today; MCP optional)
+- **Current implementation:** `AlphaVantageClient.query` calls the public REST API, caches raw JSON, and writes canonical CSV via `canonicalize_*` helpers. Batch over symbols by looping `fetch_candles_for_timeframe` (or a thin wrapper), respecting `min_interval_sec` throttling.
+- **If using MCP:** discover tool availability once per run with `TOOL_LIST`; pull schemas with `TOOL_GET` before each concrete data request. Keep the same canonical schema as the REST path.
+- Use these primary endpoints (both paths):
   - `TIME_SERIES_INTRADAY` for minute/hour (`interval` in `1min,5min,15min,30min,60min`, `symbol` required).
   - `TIME_SERIES_DAILY` or `TIME_SERIES_DAILY_ADJUSTED` for daily candles.
   - `TIME_SERIES_MONTHLY` or `TIME_SERIES_MONTHLY_ADJUSTED` for monthly candles.
@@ -223,3 +231,19 @@ flowchart LR
 6. Train baseline ranking models and a Transformer ranker with temporal plus cross-sectional attention.
 7. Report ranking metrics, per-ticker diagnostics, and reproducibility artifacts.
 8. Future phase: add portfolio construction and trading simulation after forecast quality is validated.
+
+## Pilot: multi-ticker inputs for `MSTR` direction
+
+As a concrete stepping stone toward a full universe ranker, define a **minimum viable universe**: one **target** symbol (`MSTR`) and **2–3 predictor** symbols whose returns plausibly lead or co-move with MSTR’s Bitcoin-heavy balance sheet narrative. At each aligned timestamp, the model sees all symbols’ lookback features (with masks for missing rows) and predicts MSTR’s next-period **direction** and/or **raw or market-relative return**; later, generalize the same machinery to a larger cross-section.
+
+**Suggested predictor tickers (verify availability and adjust for your Alpha Vantage subscription):**
+
+| Symbol | Role |
+|--------|------|
+| **IBIT** | Spot Bitcoin ETF—tight link to the primary driver of MSTR’s asset value narrative. |
+| **COIN** | Crypto exchange equity—high beta to crypto cycles and liquidity. |
+| **QQQ** | Nasdaq-100 proxy—tech/risk-on regime that often co-moves with speculative growth names. |
+
+Reasonable alternatives if a symbol is missing or illiquid on your feed: **GBTC** (Bitcoin trust), **MARA** or **RIOT** (miners, higher idiosyncratic noise). For v1, prefer **IBIT + COIN** (2 tickers) and add **QQQ** as a third once alignment and masking are stable.
+
+**Modeling note:** This pilot is the **small-universe special case** of the cross-sectional design: `num_symbols` is 3–4, but tensor layout, masking, and leakage rules match the full plan so scaling the watchlist does not require a rewrite.
