@@ -1,4 +1,4 @@
-"""End-to-end walk-forward experiment: ingest, windows, train, metrics, artifacts."""
+"""End-to-end walk-forward experiment: multi-timeframe autoregressive candle prediction."""
 
 from __future__ import annotations
 
@@ -12,20 +12,29 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import yaml
-from sklearn.preprocessing import StandardScaler
 
-from stock_transformer.backtest.metrics import aggregate_fold_metrics, classification_metrics
-from stock_transformer.backtest.walkforward import WalkForwardConfig, assert_fold_chronology, generate_folds
-from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_timeframe
-from stock_transformer.data.synthetic import synthetic_random_walk_candles
-from stock_transformer.features.sequences import (
-    build_direction_labels,
-    build_feature_matrix,
-    build_windows,
-    validate_no_lookahead,
+from stock_transformer.backtest.metrics import (
+    aggregate_fold_metrics,
+    classification_metrics,
+    regression_metrics,
 )
-from stock_transformer.model.baselines import moving_average_baseline, persistence_probs_on_test
-from stock_transformer.model.transformer_classifier import CandleTransformerClassifier, predict_proba
+from stock_transformer.backtest.walkforward import (
+    WalkForwardConfig,
+    assert_fold_chronology,
+    generate_folds,
+)
+from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_timeframe
+from stock_transformer.data.synthetic import synthetic_multitimeframe_candles
+from stock_transformer.features.sequences import (
+    N_CANDLE_FEATURES,
+    TIMEFRAME_IDS,
+    build_multitimeframe_samples,
+)
+from stock_transformer.model.transformer_classifier import (
+    CandleTransformer,
+    predict_direction_proba,
+    resolve_device,
+)
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -33,65 +42,54 @@ def load_config(path: str | Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def prepare_windows_from_df(
-    df: pd.DataFrame,
-    lookback: int,
-) -> tuple[np.ndarray, np.ndarray, pd.Series, np.ndarray, pd.DataFrame]:
-    aligned, X = build_feature_matrix(df)
-    y_bar = build_direction_labels(aligned["close"].to_numpy())
-    X_win, y_win, end_idx, ts_end = build_windows(
-        X, y_bar, aligned["timestamp"], lookback
-    )
-    validate_no_lookahead(aligned, end_idx, lookback)
-    return X_win, y_win, ts_end, end_idx, aligned
-
-
-def _scale_fold(
-    X_tr: np.ndarray,
-    X_va: np.ndarray,
-    X_te: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, StandardScaler]:
-    s, L, F = X_tr.shape
-    scaler = StandardScaler()
-    scaler.fit(X_tr.reshape(-1, F))
-    def tr(x: np.ndarray) -> np.ndarray:
-        s2, l2, f2 = x.shape
-        t = scaler.transform(x.reshape(-1, f2)).reshape(s2, l2, f2)
-        return t.astype(np.float32)
-
-    return tr(X_tr), tr(X_va), tr(X_te), scaler
+# ── training ───────────────────────────────────────────────────────────────
 
 
 def _train_model(
-    X_tr: np.ndarray,
-    y_tr: np.ndarray,
-    X_va: np.ndarray,
-    y_va: np.ndarray,
+    X_feat: np.ndarray,
+    X_tf: np.ndarray,
+    X_mask: np.ndarray,
+    y_reg: np.ndarray,
+    y_dir: np.ndarray,
+    X_feat_va: np.ndarray,
+    X_tf_va: np.ndarray,
+    X_mask_va: np.ndarray,
+    y_reg_va: np.ndarray,
+    y_dir_va: np.ndarray,
     cfg: dict[str, Any],
-    n_features: int,
     device: torch.device,
-) -> CandleTransformerClassifier:
+) -> CandleTransformer:
     torch.manual_seed(int(cfg.get("seed", 42)))
-    model = CandleTransformerClassifier(
-        n_features=n_features,
+
+    n_tf = len(TIMEFRAME_IDS)
+    model = CandleTransformer(
+        n_candle_features=N_CANDLE_FEATURES,
+        n_timeframes=n_tf,
         d_model=int(cfg["d_model"]),
         nhead=int(cfg["nhead"]),
         num_layers=int(cfg["num_layers"]),
         dim_feedforward=int(cfg["dim_feedforward"]),
         dropout=float(cfg["dropout"]),
+        max_seq_len=int(cfg.get("max_seq_len", 256)),
     ).to(device)
 
-    opt = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
-    loss_fn = nn.BCEWithLogitsLoss()
+    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg["learning_rate"]), weight_decay=1e-4)
+    reg_loss_fn = nn.MSELoss()
+    dir_loss_fn = nn.BCEWithLogitsLoss()
+    alpha = float(cfg.get("loss_alpha", 0.5))
 
-    X_tr_t = torch.from_numpy(X_tr).to(device)
-    y_tr_t = torch.from_numpy(y_tr).to(device)
-    X_va_t = torch.from_numpy(X_va).to(device)
-    y_va_t = torch.from_numpy(y_va).to(device)
+    def _to(arr: np.ndarray, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+        return torch.from_numpy(arr).to(dtype).to(device)
+
+    xf_tr, xtf_tr, xm_tr = _to(X_feat), _to(X_tf, torch.long), _to(X_mask, torch.bool)
+    yr_tr, yd_tr = _to(y_reg), _to(y_dir)
+
+    xf_va, xtf_va, xm_va = _to(X_feat_va), _to(X_tf_va, torch.long), _to(X_mask_va, torch.bool)
+    yr_va, yd_va = _to(y_reg_va), _to(y_dir_va)
 
     bs = int(cfg["batch_size"])
     epochs = int(cfg["epochs"])
-    n = X_tr_t.size(0)
+    n = xf_tr.size(0)
     best_state = None
     best_val = float("inf")
 
@@ -101,15 +99,16 @@ def _train_model(
         for i in range(0, n, bs):
             idx = perm[i : i + bs]
             opt.zero_grad()
-            logits = model(X_tr_t[idx])
-            loss = loss_fn(logits, y_tr_t[idx])
+            c_pred, d_logit = model(xf_tr[idx], xtf_tr[idx], xm_tr[idx])
+            loss = alpha * reg_loss_fn(c_pred, yr_tr[idx]) + (1 - alpha) * dir_loss_fn(d_logit, yd_tr[idx])
             loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
 
         model.eval()
         with torch.no_grad():
-            logits = model(X_va_t)
-            vloss = float(loss_fn(logits, y_va_t))
+            c_pred_v, d_logit_v = model(xf_va, xtf_va, xm_va)
+            vloss = alpha * float(reg_loss_fn(c_pred_v, yr_va)) + (1 - alpha) * float(dir_loss_fn(d_logit_v, yd_va))
         if vloss < best_val:
             best_val = vloss
             best_state = deepcopy(model.state_dict())
@@ -119,29 +118,46 @@ def _train_model(
     return model
 
 
-def _predict_proba(model: CandleTransformerClassifier, X: np.ndarray, device: torch.device) -> np.ndarray:
+# ── inference ──────────────────────────────────────────────────────────────
+
+
+def _predict(
+    model: CandleTransformer,
+    X_feat: np.ndarray,
+    X_tf: np.ndarray,
+    X_mask: np.ndarray,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (candle_preds, direction_probs) as numpy arrays."""
     model.eval()
-    out: list[np.ndarray] = []
+    candle_parts: list[np.ndarray] = []
+    dir_parts: list[np.ndarray] = []
     bs = 256
     with torch.no_grad():
-        for i in range(0, len(X), bs):
-            xt = torch.from_numpy(X[i : i + bs]).to(device)
-            logits = model(xt)
-            p = predict_proba(logits).cpu().numpy()
-            out.append(p)
-    return np.concatenate(out, axis=0)
+        for i in range(0, len(X_feat), bs):
+            xf = torch.from_numpy(X_feat[i : i + bs]).float().to(device)
+            xt = torch.from_numpy(X_tf[i : i + bs]).long().to(device)
+            xm = torch.from_numpy(X_mask[i : i + bs]).bool().to(device)
+            c_pred, d_logit = model(xf, xt, xm)
+            candle_parts.append(c_pred.cpu().numpy())
+            dir_parts.append(predict_direction_proba(d_logit).cpu().numpy())
+    return np.concatenate(candle_parts), np.concatenate(dir_parts)
+
+
+# ── threshold tuning ───────────────────────────────────────────────────────
 
 
 def tune_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """Pick threshold maximizing F1 on validation (coarse grid)."""
     best_t, best_f1 = 0.5, -1.0
     for t in np.linspace(0.1, 0.9, 17):
         m = classification_metrics(y_true, y_prob, threshold=float(t))
-        f1 = m["f1"]
-        if f1 > best_f1:
-            best_f1 = f1
+        if m["f1"] > best_f1:
+            best_f1 = m["f1"]
             best_t = float(t)
     return best_t
+
+
+# ── main experiment loop ───────────────────────────────────────────────────
 
 
 def run_experiment(
@@ -150,11 +166,9 @@ def run_experiment(
     use_synthetic: bool = False,
     skip_fetch: bool = False,
 ) -> dict[str, Any]:
-    """
-    Run all timeframes in config; write artifacts under ``artifacts_dir``.
+    """Run multi-timeframe walk-forward experiment; write artifacts."""
 
-    If ``use_synthetic``, ignores Alpha Vantage and uses random-walk candles per timeframe tag.
-    """
+    device = resolve_device(config.get("device", "auto"))
     cache_dir = Path(config.get("cache_dir", "data"))
     art = Path(config.get("artifacts_dir", "artifacts"))
     art.mkdir(parents=True, exist_ok=True)
@@ -163,30 +177,41 @@ def run_experiment(
     (run_dir / "config_snapshot.yaml").write_text(yaml.dump(config, sort_keys=True))
 
     symbol = str(config["symbol"])
-    timeframes = list(config["timeframes"])
-    lookback = int(config["lookback"])
+    timeframes: list[str] = list(config["timeframes"])
+    prediction_tf = str(config.get("prediction_timeframe", "daily"))
+
+    lookbacks: dict[str, int] = config.get("lookbacks", {})
+    default_lb = int(config.get("lookback", 32))
+    for tf in timeframes:
+        lookbacks.setdefault(tf, default_lb)
+
+    max_seq_len = int(config.get("max_seq_len", 256))
+
     wf = WalkForwardConfig(
         train_bars=int(config["train_bars"]),
         val_bars=int(config["val_bars"]),
         test_bars=int(config["test_bars"]),
         step_bars=int(config["step_bars"]),
     )
-    device = torch.device(config.get("device", "cpu"))
 
-    summary: dict[str, Any] = {"timeframes": {}, "run_dir": str(run_dir)}
-
-    client = AlphaVantageClient(cache_dir=cache_dir) if not use_synthetic else None
-
-    for tf in timeframes:
-        if use_synthetic or skip_fetch:
-            df = synthetic_random_walk_candles(n=1200, symbol=symbol, timeframe=tf, seed=hash(tf) % 2**32)
-        else:
-            assert client is not None
-            df = fetch_candles_for_timeframe(
+    # ── 1. data ingestion ──────────────────────────────────────────────
+    if use_synthetic:
+        candles_by_tf = synthetic_multitimeframe_candles(
+            n_daily=int(config.get("synthetic_n_daily", 1200)),
+            symbol=symbol,
+            seed=int(config.get("seed", 42)),
+            timeframes=timeframes,
+        )
+    else:
+        client = AlphaVantageClient(cache_dir=cache_dir)
+        candles_by_tf: dict[str, pd.DataFrame] = {}
+        for tf in timeframes:
+            candles_by_tf[tf] = fetch_candles_for_timeframe(
                 client,
                 symbol,
                 tf,
                 use_adjusted_daily=bool(config.get("use_adjusted_daily", True)),
+                use_adjusted_weekly=bool(config.get("use_adjusted_weekly", True)),
                 use_adjusted_monthly=bool(config.get("use_adjusted_monthly", True)),
                 intraday_month=config.get("intraday_month"),
                 intraday_extended_hours=bool(config.get("intraday_extended_hours", False)),
@@ -194,78 +219,87 @@ def run_experiment(
                 daily_outputsize=str(config.get("daily_outputsize", "full")),
             )
 
-        X_win, y_win, ts_end, end_idx, aligned = prepare_windows_from_df(df, lookback)
-        closes = aligned["close"].to_numpy(dtype=np.float64)
-        n_w = X_win.shape[0]
-        folds = generate_folds(n_w, wf)
-        if not folds:
-            summary["timeframes"][tf] = {"error": "no_folds", "n_windows": n_w}
-            continue
+    if prediction_tf not in candles_by_tf:
+        raise ValueError(
+            f"prediction_timeframe '{prediction_tf}' not in fetched timeframes {list(candles_by_tf)}"
+        )
 
-        fold_rows: list[dict[str, Any]] = []
-        all_preds: list[pd.DataFrame] = []
+    # ── 2. multi-timeframe tokenization ────────────────────────────────
+    X_feat, X_tf_ids, X_mask, y_reg, y_dir, ts_pred = build_multitimeframe_samples(
+        candles_by_tf,
+        prediction_tf=prediction_tf,
+        lookbacks=lookbacks,
+        max_seq_len=max_seq_len,
+    )
 
-        for fold in folds:
-            assert_fold_chronology(ts_end, fold)
+    n_samples = X_feat.shape[0]
+    folds = generate_folds(n_samples, wf)
 
-            X_tr, y_tr = X_win[fold.train], y_win[fold.train]
-            X_va, y_va = X_win[fold.val], y_win[fold.val]
-            X_te, y_te = X_win[fold.test], y_win[fold.test]
+    summary: dict[str, Any] = {
+        "symbol": symbol,
+        "prediction_timeframe": prediction_tf,
+        "timeframes": timeframes,
+        "n_samples": n_samples,
+        "n_folds": len(folds),
+        "device": str(device),
+        "folds": [],
+        "run_dir": str(run_dir),
+    }
 
-            X_tr_s, X_va_s, X_te_s, _ = _scale_fold(X_tr, X_va, X_te)
-            F = X_tr_s.shape[2]
-            model = _train_model(X_tr_s, y_tr, X_va_s, y_va, config, F, device)
+    if not folds:
+        summary["error"] = "no_folds"
+        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+        return summary
 
-            p_va = _predict_proba(model, X_va_s, device)
-            thr = tune_threshold(y_va, p_va)
+    # ── 3. walk-forward loop ───────────────────────────────────────────
+    fold_rows: list[dict[str, Any]] = []
+    all_preds: list[pd.DataFrame] = []
 
-            p_te = _predict_proba(model, X_te_s, device)
-            m_te = classification_metrics(y_te, p_te, threshold=thr)
+    for fold in folds:
+        assert_fold_chronology(ts_pred, fold)
 
-            pers_probs = persistence_probs_on_test(y_va, y_te)
-            m_pers = classification_metrics(y_te, pers_probs, threshold=0.5)
+        sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
 
-            ma_window = 5
-            test_ix = range(fold.test.start, fold.test.stop)
-            ma_probs = np.array(
-                [
-                    moving_average_baseline(closes[: int(end_idx[i]) + 1], window=ma_window)
-                    for i in test_ix
-                ],
-                dtype=np.float64,
-            )
-            m_ma = classification_metrics(y_te, ma_probs, threshold=0.5)
+        model = _train_model(
+            X_feat[sl_tr], X_tf_ids[sl_tr], X_mask[sl_tr], y_reg[sl_tr], y_dir[sl_tr],
+            X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], y_reg[sl_va], y_dir[sl_va],
+            config, device,
+        )
 
-            row = {"fold_id": fold.fold_id, **{f"test_{k}": v for k, v in m_te.items()}}
-            row["threshold"] = thr
-            row["test_persistence_accuracy"] = m_pers["accuracy"]
-            row["test_ma5_accuracy"] = m_ma["accuracy"]
-            fold_rows.append(row)
+        # Validation — tune threshold
+        candle_va, prob_va = _predict(model, X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], device)
+        thr = tune_threshold(y_dir[sl_va], prob_va)
 
-            pred_df = pd.DataFrame(
-                {
-                    "timestamp": ts_end.iloc[fold.test].values,
-                    "symbol": symbol,
-                    "timeframe": tf,
-                    "y_true": y_te,
-                    "y_prob": p_te,
-                    "y_pred": (p_te >= thr).astype(int),
-                    "fold_id": fold.fold_id,
-                }
-            )
-            all_preds.append(pred_df)
+        # Test
+        candle_te, prob_te = _predict(model, X_feat[sl_te], X_tf_ids[sl_te], X_mask[sl_te], device)
+        m_cls = classification_metrics(y_dir[sl_te], prob_te, threshold=thr)
+        m_reg = regression_metrics(y_reg[sl_te], candle_te)
 
-        agg = aggregate_fold_metrics(fold_rows)
-        summary["timeframes"][tf] = {
-            "n_windows": n_w,
-            "n_folds": len(folds),
-            "aggregate": agg,
-            "folds": fold_rows,
-        }
+        row: dict[str, Any] = {"fold_id": fold.fold_id, "threshold": thr}
+        row.update({f"test_cls_{k}": v for k, v in m_cls.items()})
+        row.update({f"test_reg_{k}": v for k, v in m_reg.items()})
+        fold_rows.append(row)
 
-        pred_path = run_dir / f"predictions__{symbol}__{tf.replace('/', '-')}.csv"
-        pd.concat(all_preds, ignore_index=True).to_csv(pred_path, index=False)
+        pred_df = pd.DataFrame(
+            {
+                "timestamp": ts_pred.iloc[sl_te].values if hasattr(ts_pred, "iloc") else ts_pred[sl_te.start:sl_te.stop],
+                "symbol": symbol,
+                "y_dir_true": y_dir[sl_te],
+                "y_dir_prob": prob_te,
+                "y_dir_pred": (prob_te >= thr).astype(int),
+                "y_close_ret_true": y_reg[sl_te, 3] if y_reg.ndim == 2 else y_reg[sl_te],
+                "y_close_ret_pred": candle_te[:, 3] if candle_te.ndim == 2 else candle_te,
+                "fold_id": fold.fold_id,
+            }
+        )
+        all_preds.append(pred_df)
 
+    agg = aggregate_fold_metrics(fold_rows)
+    summary["aggregate"] = agg
+    summary["folds"] = fold_rows
+
+    pred_path = run_dir / f"predictions__{symbol}.csv"
+    pd.concat(all_preds, ignore_index=True).to_csv(pred_path, index=False)
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     return summary
 

@@ -1,8 +1,9 @@
 """
 Alpha Vantage OHLCV ingestion.
 
-Mirrors MCP tools `TIME_SERIES_INTRADAY`, `TIME_SERIES_DAILY` / `_ADJUSTED`,
-`TIME_SERIES_MONTHLY` / `_ADJUSTED` via the public REST API (same data as Cursor MCP).
+Mirrors MCP tools ``TIME_SERIES_INTRADAY``, ``TIME_SERIES_DAILY`` / ``_ADJUSTED``,
+``TIME_SERIES_WEEKLY`` / ``_ADJUSTED``,
+``TIME_SERIES_MONTHLY`` / ``_ADJUSTED`` via the public REST API.
 
 Set ``ALPHAVANTAGE_API_KEY`` in the environment (or pass ``api_key``).
 """
@@ -27,7 +28,6 @@ from stock_transformer.data.canonicalize import (
 
 BASE_URL = "https://www.alphavantage.co/query"
 
-# Minimal delay between HTTP calls to respect free-tier rate limits
 DEFAULT_MIN_INTERVAL_SEC = 12.0
 
 
@@ -85,6 +85,7 @@ def fetch_candles_for_timeframe(
     timeframe: str,
     *,
     use_adjusted_daily: bool = True,
+    use_adjusted_weekly: bool = True,
     use_adjusted_monthly: bool = True,
     intraday_month: str | None = None,
     intraday_extended_hours: bool = False,
@@ -93,11 +94,10 @@ def fetch_candles_for_timeframe(
     use_cache: bool = True,
     force_refresh_canonical: bool = False,
 ) -> pd.DataFrame:
-    """
-    Fetch and return canonical candles for one timeframe string.
+    """Fetch and return canonical candles for one timeframe.
 
-    ``timeframe`` values: ``1min``, ``5min``, ``15min``, ``30min``, ``60min``,
-    ``daily``, ``monthly``.
+    Supported ``timeframe`` values: ``1min``, ``5min``, ``15min``, ``30min``,
+    ``60min``, ``daily``, ``weekly``, ``monthly``.
     """
     symbol = symbol.upper()
     tf = timeframe.lower()
@@ -125,6 +125,15 @@ def fetch_candles_for_timeframe(
             payload, symbol=symbol, timeframe="daily", adjusted=use_adjusted_daily
         )
         tag = "daily_adj" if use_adjusted_daily else "daily_raw"
+
+    elif tf == "weekly":
+        fn = "TIME_SERIES_WEEKLY_ADJUSTED" if use_adjusted_weekly else "TIME_SERIES_WEEKLY"
+        params = {"symbol": symbol, "datatype": "json"}
+        payload = client.query(fn, params, use_cache=use_cache)
+        df = canonicalize_series(
+            payload, symbol=symbol, timeframe="weekly", adjusted=use_adjusted_weekly
+        )
+        tag = "weekly_adj" if use_adjusted_weekly else "weekly_raw"
 
     elif tf == "monthly":
         fn = "TIME_SERIES_MONTHLY_ADJUSTED" if use_adjusted_monthly else "TIME_SERIES_MONTHLY"

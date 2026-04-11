@@ -1,4 +1,4 @@
-"""Classification metrics and fold aggregation."""
+"""Classification + regression metrics and fold aggregation."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
     f1_score,
+    mean_absolute_error,
+    mean_squared_error,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -35,6 +37,31 @@ def classification_metrics(
         out["roc_auc"] = float(roc_auc_score(y_true, y_prob))
     else:
         out["roc_auc"] = float("nan")
+    return out
+
+
+def regression_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> dict[str, float]:
+    """MAE, RMSE, and directional accuracy from regression predictions.
+
+    Directional accuracy: fraction of samples where the predicted close-return
+    sign matches the actual close-return sign (column index 3 = close_ret).
+    """
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+
+    mae = float(mean_absolute_error(y_true, y_pred))
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+
+    out: dict[str, float] = {"mae": mae, "rmse": rmse}
+
+    if y_true.ndim == 2 and y_true.shape[1] > 3:
+        true_dir = (y_true[:, 3] > 0).astype(int)
+        pred_dir = (y_pred[:, 3] > 0).astype(int)
+        out["directional_accuracy"] = float(accuracy_score(true_dir, pred_dir))
+
     return out
 
 

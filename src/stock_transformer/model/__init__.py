@@ -3,11 +3,20 @@ from stock_transformer.model.baselines import (
     persistence_baseline,
     persistence_probs_on_test,
 )
-from stock_transformer.model.transformer_classifier import CandleTransformerClassifier, predict_proba
+from stock_transformer.model.transformer_classifier import (
+    CandleTransformer,
+    CandleTransformerClassifier,
+    predict_direction_proba,
+    predict_proba,
+    resolve_device,
+)
 
 __all__ = [
+    "CandleTransformer",
     "CandleTransformerClassifier",
+    "predict_direction_proba",
     "predict_proba",
+    "resolve_device",
     "persistence_baseline",
     "persistence_probs_on_test",
     "moving_average_baseline",
