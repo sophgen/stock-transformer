@@ -1,55 +1,87 @@
 # stock-transformer
 
-Leakage-safe autoregressive **next-candle direction** forecasting with a causal Transformer and **walk-forward (rolling-origin) evaluation**. Uses Alpha Vantage OHLCV series (same endpoints as the Cursor **Alpha Vantage MCP** tools: `TIME_SERIES_INTRADAY`, `TIME_SERIES_DAILY` / `TIME_SERIES_DAILY_ADJUSTED`, `TIME_SERIES_MONTHLY` / `TIME_SERIES_MONTHLY_ADJUSTED`).
+Multi-timeframe autoregressive candle transformer with walk-forward backtesting.
 
-## Layout
+## Concept
 
-- `src/stock_transformer/data/` — REST ingestion (mirrors MCP), canonical candles, synthetic data for tests
-- `src/stock_transformer/features/` — feature matrix, direction labels, sliding windows, lookahead checks
-- `src/stock_transformer/model/` — causal `CandleTransformerClassifier`, naive baselines
-- `src/stock_transformer/backtest/` — walk-forward splits, metrics, `runner` orchestration
-- `configs/default.yaml` — experiment template
-- `tests/` — temporal integrity and smoke tests
+Each OHLCV candle — from any timeframe (minute, hour, day, week, month) — is
+treated as a **token**.  All past candles up to a prediction point are fed into
+a causal Transformer encoder (like autoregressive language modeling, but for
+price candles).  The model predicts the **next candle** — both its OHLCV
+log-returns (regression) and its direction (classification: up / down).
+
+The backtest enforces **strict point-in-time discipline**: at every prediction
+step the model only sees candles whose timestamps are ≤ the cutoff.  Walk-forward
+folds ensure train / validation / test splits never overlap in time.
 
 ## Setup
 
 ```bash
-cd /path/to/stock-transformer
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Set `ALPHAVANTAGE_API_KEY` for live data (see [Alpha Vantage](https://www.alphavantage.co/support/#api-key)).
+On **Apple Silicon** the default config uses `device: "auto"` which picks MPS
+when available.  Override to `"cpu"` or `"cuda"` if needed.
 
-## Run
-
-**Synthetic smoke (no API key):**
+## Quick start — synthetic data (no API key required)
 
 ```bash
-stx-backtest -c configs/default.yaml --synthetic
+stx-backtest --synthetic
 ```
 
-**Live data:**
+## Live data via Alpha Vantage
 
 ```bash
-export ALPHAVANTAGE_API_KEY=...
+export ALPHAVANTAGE_API_KEY=your_key_here
 stx-backtest -c configs/default.yaml
 ```
 
-Artifacts: `artifacts/run_<timestamp>/` — `config_snapshot.yaml`, `summary.json`, per-timeframe `predictions__*.csv`.
+The pipeline fetches candles for every timeframe listed in the config, builds
+multi-timeframe token sequences, and runs a walk-forward backtest.
 
-## MCP vs Python
+## Configuration
 
-In Cursor, discover tools with MCP `TOOL_LIST` → `TOOL_GET` → `TOOL_CALL`. This package calls the same Alpha Vantage **HTTP API** so you can run backtests from the CLI/CI without the MCP runtime.
+See `configs/default.yaml`.  Key settings:
+
+| Setting | Description |
+|---|---|
+| `timeframes` | List of timeframes to ingest as tokens |
+| `prediction_timeframe` | Timeframe of the candle being predicted |
+| `lookbacks` | Per-timeframe number of past candles to include |
+| `max_seq_len` | Maximum token sequence length (pad / truncate) |
+| `loss_alpha` | Weighting: `α·MSE + (1−α)·BCE` |
+| `device` | `"auto"` / `"mps"` / `"cuda"` / `"cpu"` |
+
+## Architecture
+
+```
+Multi-timeframe candle sequence (sorted by timestamp):
+  [month_t-3, ..., week_t-2, ..., day_t-10, ..., hour_t-5, ...]
+  Each token = [open_ret, high_ret, low_ret, close_ret, log_vol] + timeframe embedding
+
+       ↓  causal Transformer encoder (only attends to past)
+
+  Last token representation
+       ↓
+  ┌─────────────┐    ┌─────────────┐
+  │ Regression   │    │ Direction   │
+  │ head (OHLCV) │    │ head (↑/↓)  │
+  └─────────────┘    └─────────────┘
+```
 
 ## Tests
 
 ```bash
-pytest
+pytest -v
 ```
 
-## Assumptions
+## Project structure
 
-- **Hour candles** use intraday `interval=60min` (Alpha Vantage intraday intervals: 1, 5, 15, 30, 60 minutes).
-- **Forecast-only** phase: classification metrics on held-out test slices; no trading simulation.
-- Intraday history is often fetched **per month** via `month=YYYY-MM` when you need long intraday backtests (extend config / loop in a future iteration).
+```
+src/stock_transformer/
+├── data/           # Alpha Vantage client, canonicalization, synthetic generator
+├── features/       # Multi-timeframe tokenization, log-return features
+├── model/          # CandleTransformer, baselines, device resolver
+└── backtest/       # Walk-forward splits, metrics, experiment runner
+```

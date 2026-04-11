@@ -1,29 +1,42 @@
-# Default experiment config (copy and edit for runs).
+# Multi-timeframe autoregressive candle transformer — default config.
 
 symbol: "IBM"
+
+# Timeframes to ingest (all become input tokens)
 timeframes:
-  - "1min"
-  - "60min"
-  - "daily"
   - "monthly"
+  - "weekly"
+  - "daily"
+  - "60min"
 
-# Intraday: Alpha Vantage returns one month per request when month is set.
-# Omit `month` to use latest compact/full window per API.
-intraday_month: null  # e.g. "2024-01" or null
+# Which timeframe we predict the *next candle* for
+prediction_timeframe: "daily"
 
-lookback: 32
-train_bars: 500
-val_bars: 100
-test_bars: 100
-step_bars: 100
+# Per-timeframe lookback (how many past candles to include as tokens)
+lookbacks:
+  monthly: 12
+  weekly: 16
+  daily: 32
+  60min: 48
 
-# Data
-use_adjusted_daily: true
-use_adjusted_monthly: true
+# Max token-sequence length (pad / truncate to this)
+max_seq_len: 256
+
+# Intraday options
+intraday_month: null
 intraday_extended_hours: false
 intraday_outputsize: "full"
 daily_outputsize: "full"
+use_adjusted_daily: true
+use_adjusted_weekly: true
+use_adjusted_monthly: true
 cache_dir: "data"
+
+# Walk-forward split (in sample count)
+train_bars: 400
+val_bars: 80
+test_bars: 80
+step_bars: 80
 
 # Model
 d_model: 64
@@ -31,14 +44,19 @@ nhead: 4
 num_layers: 2
 dim_feedforward: 128
 dropout: 0.1
-epochs: 5
+epochs: 10
 batch_size: 32
-learning_rate: 0.001
-device: "cpu"
+learning_rate: 0.0005
+
+# Combined loss weighting: alpha * regression_MSE + (1-alpha) * direction_BCE
+loss_alpha: 0.5
+
+# "auto" picks MPS on Apple Silicon, CUDA on NVIDIA, else CPU
+device: "auto"
 seed: 42
 
-# Threshold for binary prediction from probability (tuned on val in runner)
 default_threshold: 0.5
-
-# Artifacts
 artifacts_dir: "artifacts"
+
+# Synthetic data size (only used with --synthetic flag)
+synthetic_n_daily: 1200
