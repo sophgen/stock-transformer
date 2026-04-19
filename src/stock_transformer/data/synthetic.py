@@ -92,3 +92,40 @@ def synthetic_multitimeframe_candles(
         )
 
     return result
+
+
+def synthetic_universe_candles(
+    n_bars: int,
+    symbols: list[str] | tuple[str, ...],
+    *,
+    timeframe: str = "daily",
+    seed: int = 0,
+) -> dict[str, pd.DataFrame]:
+    """Shared business-day calendar; correlated random walks for multi-ticker tests."""
+    rng = np.random.default_rng(seed)
+    n = int(n_bars)
+    idx = pd.date_range("2019-01-01", periods=n, freq="B")
+    base_ret = rng.normal(0, 0.008, size=n)
+    out: dict[str, pd.DataFrame] = {}
+    for i, sym in enumerate(str(s).upper() for s in symbols):
+        noise = rng.normal(0, 0.004, size=n) if i > 0 else 0.0
+        log_ret = base_ret * (0.85 + 0.05 * i) + (noise if isinstance(noise, np.ndarray) else 0.0)
+        close = 50 * np.exp(np.cumsum(log_ret))
+        o_noise = rng.normal(0, 0.002, size=n)
+        open_ = np.r_[close[0], close[:-1]] * (1 + o_noise)
+        high = np.maximum(open_, close) * (1 + rng.uniform(0, 0.004, size=n))
+        low = np.minimum(open_, close) * (1 - rng.uniform(0, 0.004, size=n))
+        vol = rng.integers(500, 8_000, size=n).astype(float)
+        out[sym] = pd.DataFrame(
+            {
+                "timestamp": idx,
+                "symbol": sym,
+                "timeframe": timeframe,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": vol,
+            }
+        )
+    return out

@@ -10,7 +10,10 @@ from stock_transformer.backtest.runner import run_from_config_path
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Stock transformer walk-forward forecast evaluation")
+    p = argparse.ArgumentParser(
+        description="Stock transformer walk-forward forecast evaluation "
+        "(single-symbol multi-timeframe or universe mode via experiment_mode in YAML)"
+    )
     p.add_argument(
         "-c",
         "--config",

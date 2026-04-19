@@ -168,6 +168,11 @@ def run_experiment(
 ) -> dict[str, Any]:
     """Run multi-timeframe walk-forward experiment; write artifacts."""
 
+    if str(config.get("experiment_mode", "single")).lower() == "universe":
+        from stock_transformer.backtest.universe_runner import run_universe_experiment
+
+        return run_universe_experiment(config, use_synthetic=use_synthetic)
+
     device = resolve_device(config.get("device", "auto"))
     cache_dir = Path(config.get("cache_dir", "data"))
     art = Path(config.get("artifacts_dir", "artifacts"))
