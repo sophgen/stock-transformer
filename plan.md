@@ -295,9 +295,11 @@ tests/
 ├── test_candle_store.py
 ├── test_membership_richer.py
 ├── test_feature_schema_hash.py
+├── test_cross_sectional_features.py
 ├── test_sector_neutral_labels.py
 ├── test_summary_per_sector.py
 ├── test_ranking_losses.py
+├── test_ranking_metrics.py
 └── test_mcp_rest_parity.py
 ```
 
@@ -538,10 +540,8 @@ flowchart LR
   2024-01-02,COIN,daily,-0.011,-0.024,-0.006,3,3,0
   ```
 
-  *(The current runner writes a wide variant `y_true_relative_<SYM>` /
-  `y_true_raw_<SYM>` / `y_score_<SYM>` with one row per `(fold_id, timestamp)`;
-  M7b migrates to this long schema and keeps a golden-file test comparing
-  against a frozen fixture at `tests/golden/predictions_universe.csv`.)*
+  *The universe runner emits this long schema; `tests/test_predictions_schema.py`
+  checks self-consistency against `tests/golden/predictions_universe.csv`.*
 
 ## Guardrails and tests
 
