@@ -43,3 +43,29 @@ def test_degenerate_row_zero_loss():
     loss = listnet_loss(pred, tgt, mask=m)
     assert loss.item() == 0.0
     assert loss.requires_grad
+
+
+def test_masked_mse_zero_when_pred_equals_target():
+    pred = torch.tensor([[1.0, 2.0, 0.5]], requires_grad=True)
+    tgt = pred.detach().clone()
+    m = torch.tensor([[True, True, True]])
+    loss = masked_mse(pred, tgt, mask=m)
+    assert loss.item() == 0.0
+
+
+def test_listnet_lower_when_pred_aligns_with_targets():
+    tgt = torch.tensor([[0.1, 0.5, 0.2], [0.0, 1.0, 2.0]])
+    m = torch.tensor([[True, True, True], [True, True, True]])
+    pred_good = tgt * 10.0
+    pred_bad = torch.zeros_like(tgt)
+    assert listnet_loss(pred_good, tgt, mask=m) < listnet_loss(pred_bad, tgt, mask=m)
+
+
+def test_approx_ndcg_lower_when_pred_tracks_gains():
+    tgt = torch.tensor([[3.0, 1.0, 2.0]])
+    m = torch.tensor([[True, True, True]])
+    pred_good = tgt.clone()
+    pred_bad = -tgt
+    assert approx_ndcg_loss(pred_good, tgt, mask=m, alpha=5.0) < approx_ndcg_loss(
+        pred_bad, tgt, mask=m, alpha=5.0
+    )

@@ -311,7 +311,7 @@ tests/
 | M8  | `src/stock_transformer/data/store.py`, `tests/test_candle_store.py`, `tests/test_membership_richer.py` |
 | M9a | `src/stock_transformer/features/cross_sectional.py`, `src/stock_transformer/features/scaling.py`, `tests/test_feature_schema_hash.py` |
 | M9b | `configs/sector_map.yaml`, `tests/test_sector_neutral_labels.py`, `tests/test_summary_per_sector.py` |
-| M10 | `src/stock_transformer/model/losses.py`, `scripts/sweep_loss.py`, `tests/test_ranking_losses.py` |
+| M10 | `src/stock_transformer/model/losses.py`, `src/stock_transformer/backtest/loss_sweep.py`, `scripts/sweep_loss.py`, `tests/test_ranking_losses.py`, `tests/test_sweep_loss.py` |
 | M12 | `src/stock_transformer/data/mcp_canonicalize.py` + `tests/test_mcp_rest_parity.py`, `tests/fixtures/av_raw/*.json` |
 
 ## Alpha Vantage data plan
@@ -841,6 +841,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 - [x] **M10 — Ranking loss ablation.**
   - **Files:**
+    - `backtest/loss_sweep.py` (new): `run_loss_sweep` writes `artifacts/.../universe_sweep_loss_*/summary.json` with top-level `by_loss`.
     - `model/losses.py` (new):
       ```python
       def masked_mse(pred: Tensor, target: Tensor) -> Tensor: ...
