@@ -36,6 +36,8 @@ alwaysApply: false
 
 - Feature for sample at `t` depends only on panel rows **`≤ t`**. No forward-fill of future info. No "future-aware" imputation.
 - **Fit scalers on train fold only**, apply frozen to val and test. Never call `.fit()` on concatenated (train+val) data.
+- **Numeric features vs model components.** The `features` YAML list, `N_UNIVERSE_FEATURES`, and `feature_schema_hash` cover **only numeric tensor columns** (the `F` axis of `[L, S, F]`). The ticker embedding (`TransformerRanker.sym_embed`) and temporal positional embedding are **model components**: always on, not listed in YAML, not counted by `F`, and not included in the hash. Do not add them to the feature list or hash when extending features in M9a.
+- **Cross-sectional signal guardrail.** Numeric features must carry cross-sectional signal on their own — the ticker embedding alone must not let the model collapse to "single-ticker OHLCV + ticker ID". The M9a features (percentile rank, z-score, relative strength, relative volume) are the explicit fix; keep that property when adding new features later.
 
 ## Reproducibility
 
