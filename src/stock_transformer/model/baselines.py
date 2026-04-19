@@ -29,6 +29,37 @@ def moving_average_baseline(closes: np.ndarray, window: int = 5) -> float:
     return 1.0 if closes[-1] > sma else 0.0
 
 
+def momentum_rank_scores(
+    close: np.ndarray,
+    *,
+    end_rows: np.ndarray,
+    lookback: int,
+) -> np.ndarray:
+    """Rank baseline: score = trailing simple return over ``lookback`` bars (exclusive end).
+
+    ``close`` is ``[n_panel, n_symbols]``; ``end_rows`` are row indices ``t``.
+    Returns ``[n_samples, n_symbols]`` scores (higher = stronger momentum).
+    """
+    close = np.asarray(close, dtype=np.float64)
+    end_rows = np.asarray(end_rows, dtype=np.int64)
+    n_s = close.shape[1]
+    out = np.full((len(end_rows), n_s), np.nan, dtype=np.float64)
+    for i, t in enumerate(end_rows):
+        a = t - lookback
+        if a < 0:
+            continue
+        c0 = close[a]
+        c1 = close[t]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[i] = np.where(np.isfinite(c0) & np.isfinite(c1) & (c0 > 0), c1 / c0 - 1.0, np.nan)
+    return out
+
+
+def equal_score_baseline(n_samples: int, n_symbols: int) -> np.ndarray:
+    """Flat scores (no cross-sectional edge)."""
+    return np.zeros((n_samples, n_symbols), dtype=np.float64)
+
+
 def persistence_probs_on_test(y_val: np.ndarray, y_test: np.ndarray) -> np.ndarray:
     """
     Persistence baseline on the test slice: predict previous realized direction.

@@ -65,6 +65,117 @@ def regression_metrics(
     return out
 
 
+def spearman_per_timestamp(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    min_valid: int = 3,
+) -> np.ndarray:
+    """Spearman correlation per row; NaN where insufficient finite pairs."""
+    import pandas as pd
+
+    scores = np.asarray(scores, dtype=np.float64)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    out = np.full(scores.shape[0], np.nan, dtype=np.float64)
+    for i in range(scores.shape[0]):
+        s = scores[i]
+        y = y_true[i]
+        m = np.isfinite(s) & np.isfinite(y)
+        if int(m.sum()) < min_valid:
+            continue
+        ss, yy = s[m], y[m]
+        if np.nanstd(ss) < 1e-12 or np.nanstd(yy) < 1e-12:
+            continue
+        out[i] = float(pd.Series(ss).corr(pd.Series(yy), method="spearman"))
+    return out
+
+
+def top_k_hit_rate(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    k: int = 2,
+    min_valid: int = 3,
+) -> float:
+    """Fraction of rows where the top-k by ``scores`` intersects top-k by ``y_true``."""
+    scores = np.asarray(scores, dtype=np.float64)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    k = int(k)
+    hits = 0
+    total = 0
+    n_s = scores.shape[1]
+    kk = min(k, n_s)
+    for i in range(scores.shape[0]):
+        s = scores[i]
+        y = y_true[i]
+        m = np.isfinite(s) & np.isfinite(y)
+        if int(m.sum()) < min_valid:
+            continue
+        idx = np.where(m)[0]
+        s_sub = s[m]
+        y_sub = y[m]
+        top_pred = set(idx[np.argsort(-s_sub)[:kk]])
+        top_true = set(idx[np.argsort(-y_sub)[:kk]])
+        hits += int(len(top_pred & top_true) > 0)
+        total += 1
+    return float(hits / total) if total else float("nan")
+
+
+def ndcg_at_k_per_timestamp(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    k: int = 3,
+    min_valid: int = 3,
+) -> np.ndarray:
+    """Simple NDCG per row using ``y_true`` (shifted to non-negative) as gains."""
+    scores = np.asarray(scores, dtype=np.float64)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    k = int(k)
+    out = np.full(scores.shape[0], np.nan, dtype=np.float64)
+    for i in range(scores.shape[0]):
+        s = scores[i]
+        y = y_true[i]
+        m = np.isfinite(s) & np.isfinite(y)
+        if int(m.sum()) < min_valid:
+            continue
+        s_sub = s[m]
+        y_sub = y[m]
+        kk = min(k, len(s_sub))
+        order = np.argsort(-s_sub)
+        rel = y_sub - np.nanmin(y_sub)
+        rel = np.maximum(rel, 0.0)
+        gains = rel[order[:kk]]
+        discounts = np.log2(np.arange(2, kk + 2))
+        dcg = float(np.sum(gains / discounts))
+        ideal_order = np.argsort(-rel)
+        ig = rel[ideal_order[:kk]]
+        idcg = float(np.sum(ig / discounts))
+        out[i] = dcg / idcg if idcg > 0 else np.nan
+    return out
+
+
+def masked_regression_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
+) -> dict[str, float]:
+    """MAE / RMSE on finite entries (optional boolean mask)."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    m = np.isfinite(y_true) & np.isfinite(y_pred)
+    if mask is not None:
+        m &= np.asarray(mask, dtype=bool)
+    if not m.any():
+        return {"mae": float("nan"), "rmse": float("nan")}
+    yt = y_true[m]
+    yp = y_pred[m]
+    mae = float(mean_absolute_error(yt, yp))
+    rmse = float(np.sqrt(mean_squared_error(yt, yp)))
+    return {"mae": mae, "rmse": rmse}
+
+
 def aggregate_fold_metrics(per_fold: list[dict[str, Any]]) -> dict[str, float]:
     """Mean and std across folds for numeric metric keys."""
     if not per_fold:

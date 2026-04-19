@@ -1,0 +1,58 @@
+# Cross-sectional / multi-ticker universe experiment (see plan.md).
+experiment_mode: "universe"
+
+# Pilot: target + predictors (order is fixed for tensors and reproducibility).
+symbols:
+  - "MSTR"
+  - "IBIT"
+  - "COIN"
+  - "QQQ"
+
+# Primary label row in training tensors; metrics also report this symbol prominently.
+target_symbol: "MSTR"
+
+# Single prediction timeframe for alignment (minute/hour map to AV intraday intervals).
+timeframe: "daily"
+
+# History window ending at t (inclusive); predicts return t -> t+1.
+lookback: 32
+
+# Require at least this many symbols with valid OHLCV at t and t+1.
+min_coverage_symbols: 3
+
+# Label: cross_sectional_return uses peer median at t; raw_return has no demeaning.
+label_mode: "cross_sectional_return" # or "raw_return"
+
+# Alpha Vantage fetch options (same as single-symbol config).
+use_adjusted_daily: true
+use_adjusted_weekly: true
+use_adjusted_monthly: true
+intraday_month: null
+intraday_extended_hours: false
+intraday_outputsize: "full"
+daily_outputsize: "full"
+cache_dir: "data"
+
+# Walk-forward on aligned sample index (one row per prediction timestamp).
+train_bars: 200
+val_bars: 40
+test_bars: 40
+step_bars: 40
+
+# Ranker model
+d_model: 64
+nhead: 4
+num_temporal_layers: 2
+num_cross_layers: 1
+dim_feedforward: 128
+dropout: 0.1
+epochs: 8
+batch_size: 16
+learning_rate: 0.0005
+
+device: "auto"
+seed: 42
+artifacts_dir: "artifacts"
+
+# Synthetic: shared calendar, no API (for CI / local smoke).
+synthetic_n_bars: 600

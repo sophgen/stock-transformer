@@ -10,10 +10,12 @@ from stock_transformer.model.transformer_classifier import (
     predict_proba,
     resolve_device,
 )
+from stock_transformer.model.transformer_ranker import TransformerRanker
 
 __all__ = [
     "CandleTransformer",
     "CandleTransformerClassifier",
+    "TransformerRanker",
     "predict_direction_proba",
     "predict_proba",
     "resolve_device",

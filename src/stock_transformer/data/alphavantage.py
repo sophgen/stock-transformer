@@ -152,3 +152,38 @@ def fetch_candles_for_timeframe(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_path, index=False)
     return df
+
+
+def fetch_candles_for_universe(
+    client: AlphaVantageClient,
+    symbols: list[str] | tuple[str, ...],
+    timeframe: str,
+    *,
+    use_adjusted_daily: bool = True,
+    use_adjusted_weekly: bool = True,
+    use_adjusted_monthly: bool = True,
+    intraday_month: str | None = None,
+    intraday_extended_hours: bool = False,
+    intraday_outputsize: str = "full",
+    daily_outputsize: str = "full",
+    use_cache: bool = True,
+    force_refresh_canonical: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """Fetch canonical candles for every symbol, respecting client throttling."""
+    out: dict[str, pd.DataFrame] = {}
+    for sym in symbols:
+        out[sym.upper()] = fetch_candles_for_timeframe(
+            client,
+            sym,
+            timeframe,
+            use_adjusted_daily=use_adjusted_daily,
+            use_adjusted_weekly=use_adjusted_weekly,
+            use_adjusted_monthly=use_adjusted_monthly,
+            intraday_month=intraday_month,
+            intraday_extended_hours=intraday_extended_hours,
+            intraday_outputsize=intraday_outputsize,
+            daily_outputsize=daily_outputsize,
+            use_cache=use_cache,
+            force_refresh_canonical=force_refresh_canonical,
+        )
+    return out
