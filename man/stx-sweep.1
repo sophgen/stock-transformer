@@ -1,0 +1,18 @@
+.TH "STX SWEEP" "1" "2026-04-19" "0.1.0" "stx sweep Manual"
+.SH NAME
+stx\-sweep \- Run loss sweep (mse, listnet, approx_ndcg)...
+.SH SYNOPSIS
+.B stx sweep
+[OPTIONS]
+.SH DESCRIPTION
+Run loss sweep (mse, listnet, approx_ndcg) and merge summaries.
+.SH OPTIONS
+.TP
+\fB\-c,\fP \-\-config FILE
+Universe experiment YAML.  [default: configs/universe.yaml]
+.TP
+\fB\-\-synthetic\fP
+Use synthetic universe data.
+.TP
+\fB\-\-output\-format\fP [text|json]
+text: comparison table; json: merged sweep summary.  [default: text]

@@ -14,11 +14,15 @@ uv run mypy src/stock_transformer
 
 Alternatively, create a venv and `pip install -e ".[dev]"`.
 
+**Locked dependencies:** `uv.lock` pins transitive versions for reproducible installs; bump it with `uv lock` when you change `pyproject.toml`.
+
 ## Architecture (high level)
 
 ```text
-stx (cli.py)  →  prepare_backtest_config → run_experiment | run_universe_experiment
-                 validate / config show|diff / fetch / sweep
+stx (cli package)  →  services (orchestration)  →  prepare_backtest_config → run_experiment | run_universe_experiment
+        │                      │
+        │                      └── fetch / sweep / validate
+        └── output, logging, progress (no training imports)
                       ↓
          single-symbol runner          universe_runner
                       ↓                       ↓
@@ -27,11 +31,23 @@ stx (cli.py)  →  prepare_backtest_config → run_experiment | run_universe_exp
               artifacts (summary.json, CSV, logs)
 ```
 
+### Layering rules
+
+- **`stock_transformer/cli/`** parses arguments, configures logging, formats stdout/stderr, and translates validation errors into user-facing text. It must not implement tensor math or walk-forward logic.
+- **`stock_transformer/backtest/`** orchestrates data, folds, training, and metrics; optional `ProgressCallback` (`backtest/progress.py`) lets the CLI print fold/epoch lines without importing Click inside the training loop.
+- **`stock_transformer/model/`** holds `nn.Module` implementations; device resolution lives in `device.py`.
+
 Library callers can use `prepare_backtest_config` plus `run_experiment` / `run_universe_experiment`, or the wrappers `run_from_config_path`, `run_single_symbol_from_config_path`, and `run_universe_from_config_path` exported from `stock_transformer.backtest`.
 
-- **CLI** (`src/stock_transformer/cli.py`) parses arguments, configures logging, and catches validation errors with readable messages. It should not embed training logic.
-- **Runners** (`backtest/runner.py`, `backtest/universe_runner.py`) orchestrate data, folds, training, and metrics; optional `ProgressCallback` (`backtest/progress.py`) feeds CLI stderr lines; shared helpers (`backtest/artifacts.py`, `backtest/context.py`, `device.py`).
-- **Models** (`model/`) implement `nn.Module` code only; device resolution lives in `device.py`, batched inference in `batch_predict` helpers.
+**Why `cli/services.py` imports `stock_transformer.cli` at runtime:** integration tests patch `stock_transformer.cli.run_experiment` (and similar names). Resolving runners through the public CLI package keeps those patches aligned with user-facing behavior.
+
+## Coding conventions
+
+- **Ruff** for lint + format; **mypy** with `disallow_untyped_defs` on `src/stock_transformer`.
+- Prefer **`logging`** in library modules; the CLI prints short summaries and tables.
+- **Click:** short and long flags (`-c`/`--config`), sensible defaults, `BadParameter` for fixable input mistakes before heavy work.
+- **Signals:** long commands install a SIGINT handler that raises `KeyboardInterrupt` so we exit with **130** without dumping a traceback.
+- Avoid bare `except` without a comment; if you must catch broadly, state why (e.g. fold isolation).
 
 ## Adding a model or loss
 
@@ -44,13 +60,8 @@ Library callers can use `prepare_backtest_config` plus `run_experiment` / `run_u
 
 - Prefer **synthetic** data in tests (no API keys, deterministic).
 - Golden CSV / JSON fixtures live under `tests/golden/`; update them deliberately when outputs change.
-- CLI behavior is covered with subprocess and `click.testing.CliRunner` where appropriate.
-
-## Style
-
-- **Ruff** for lint + format; **mypy** on `src/stock_transformer`.
-- Prefer `logging` in library code under `src/`; the CLI prints user-facing summaries.
-- Avoid broad `except` without comment; fold-level isolation uses `BLE001` with an explicit rationale.
+- **Unit tests** target pure helpers (`cli/output.py`, config validation) and runners with mocks.
+- **CLI tests** use `click.testing.CliRunner` and **subprocess** invocations (`python -m stock_transformer.cli …`) so exit codes and patching behavior match production.
 
 ## Pull requests
 

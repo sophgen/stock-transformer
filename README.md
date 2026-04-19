@@ -4,6 +4,27 @@ Multi-timeframe autoregressive candle transformer **and** a **multi-ticker unive
 
 Requires **Python 3.11+**.
 
+## Contents
+
+- [What it does](#what-it-does)
+- [Installation](#installation)
+- [Quickstart](#quickstart-synthetic-no-api-key)
+- [Live data](#live-data-alpha-vantage)
+- [CLI reference](#cli-reference-stx)
+- [Configuration precedence](#configuration-precedence)
+- [Environment variables](#environment-variables)
+- [Examples](#example-commands)
+- [Shell completion](#shell-completion-bash-zsh-fish)
+- [Man pages](#man-pages)
+- [Docker](#docker)
+- [Troubleshooting](#troubleshooting)
+- [Configuration files](#configuration-files)
+- [Artifacts](#artifacts)
+- [Tests and quality](#tests-and-quality)
+- [CLI package layout](#cli-package-layout)
+- [Project structure](#project-structure)
+- [Contributing](#contributing)
+
 ## What it does
 
 - **Single-symbol mode (default):** Each OHLCV candle from multiple timeframes is a token; a causal Transformer predicts the next candle (regression + direction).
@@ -134,6 +155,21 @@ For keys supported by both file and environment:
 
 Unknown YAML keys log a **warning** (possible typo) but are ignored after validation of known fields.
 
+## Environment variables
+
+| Variable | Role |
+|----------|------|
+| `STX_CONFIG` | Default path for `-c/--config` when omitted (otherwise `configs/default.yaml`). |
+| `STX_DEVICE` | Device string merged into YAML before validation (`cpu`, `mps`, `cuda`, …). Overridden by `stx backtest --device`. |
+| `STX_CACHE_DIR` | Cache root for data (merged into config). |
+| `STX_ARTIFACTS_DIR` | Run output directory (merged into config). |
+| `STX_EPOCHS` | Integer epochs override. |
+| `STX_SEED` | Integer seed override (overridden by `--seed`). |
+| `STX_BATCH_SIZE` | Integer batch size override. |
+| `STX_LOG_LEVEL` | When you neither pass `-v`/`-vv` nor `-q`, sets root log level (`DEBUG`, `INFO`, …). |
+| `NO_COLOR` | Disable ANSI colors (same idea as `--no-color`). |
+| `ALPHAVANTAGE_API_KEY` | Required for live `fetch` / non-synthetic runs that hit the API. |
+
 ## Example commands
 
 ```bash
@@ -161,13 +197,12 @@ echo 'source ~/.stx-complete.bash' >> ~/.bashrc
 
 Committed scripts for reference: `completions/stx.bash`, `completions/stx.zsh`, `completions/stx.fish` (regenerate with the same pattern using `zsh_source` or `fish_source`).
 
-## Man pages (`man/stx.1`)
+## Man pages
 
-Regenerate from the installed Click app (dev dependency `click-man`):
+`make man` generates `man/stx.1` plus per-command pages (for example `stx-backtest(1)`, `stx-fetch(1)`) via **click-man** (dev dependency). CI runs **`make man-check`** so the committed `stx.1` stays in sync.
 
 ```bash
 make man
-# optional drift check (same as CI):
 make man-check
 ```
 
@@ -213,11 +248,26 @@ uv run mypy src/stock_transformer
 
 CI runs Ruff, **mypy** (with `disallow_untyped_defs`), pytest with **≥80%** coverage, **`make man-check`**, on Python **3.11** and **3.12** (Ubuntu), plus a **macOS** smoke job for the CLI. **Dependabot** is configured for GitHub Actions and pip (`.github/dependabot.yml`). A release workflow (`.github/workflows/release.yml`) builds and can publish on `v*` tags when `PYPI_API_TOKEN` is configured.
 
+## CLI package layout
+
+The `stx` command is implemented under `src/stock_transformer/cli/` so parsing, formatting, and orchestration stay separate from training code:
+
+| Module | Responsibility |
+|--------|----------------|
+| `cli/app.py` | Click group, subcommands, validation messages, exit codes. |
+| `cli/services.py` | Calls runners via the `stock_transformer.cli` package so tests can patch `run_experiment` and friends. |
+| `cli/output.py` | Text/JSON summaries, sweep tables, version string. |
+| `cli/logging_config.py` | Root logging for `-v` / `-q` / `--log-file`. |
+| `cli/progress_display.py` | Optional Rich stderr lines (`ProgressCallback`). |
+| `cli/validators.py` | Click callbacks (e.g. non-empty `--device`). |
+
+Core walk-forward logic remains in `backtest/` and must not import the CLI.
+
 ## Project structure
 
 ```text
 src/stock_transformer/
-├── cli.py                 # stx entrypoint (Click); progress + StxResult
+├── cli/                   # stx: app.py, services, output, logging, progress
 ├── device.py              # resolve_device (no torch.nn imports)
 ├── config_models.py       # Pydantic
 ├── config_validate.py

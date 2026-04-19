@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CLI package layout: `src/stock_transformer/cli/` (`app`, `services`, `output`, `logging_config`, `progress_display`, `validators`, `sigint`); `python -m stock_transformer.cli` entry via `cli/__main__.py`; `--device` empty-string validation.
+- Documentation: README table of contents, environment-variable table, CLI package layout; CONTRIBUTING layering and testing notes.
 - CLI: `stx config show` / `stx config diff`; `backtest --output-format`, `--dry-run`, `--seed`; global `--log-file` / `--no-color` / `--rich`; expanded `STX_*` env vars (`STX_SEED`, `STX_BATCH_SIZE`, `STX_LOG_LEVEL`, `STX_CONFIG`).
 - `ProgressCallback` + per-fold/per-epoch stderr lines; `StxResult` helper; `prepare_backtest_config` and explicit universe vs single-symbol dispatch; `run_universe_from_config_path` / `run_single_symbol_from_config_path`; dry-run fold plans for both modes.
 - Sweep text table output; subprocess helpers in tests for exit codes 2 and 130; `CliRunner(catch_exceptions=False)` fixture; fast CliRunner universe test.
@@ -22,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Monolithic `cli.py` replaced by the `stock_transformer.cli` package (same entry points: `stx`, `stx-backtest`).
 - Entry point `stx` (legacy `stx-backtest` forwards to `stx backtest`).
 - Training loops share `_run_supervised_epochs`; structured logging in runners.
 

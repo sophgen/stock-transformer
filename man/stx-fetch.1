@@ -1,0 +1,18 @@
+.TH "STX FETCH" "1" "2026-04-19" "0.1.0" "stx fetch Manual"
+.SH NAME
+stx\-fetch \- Fetch daily-adjusted OHLCV for symbols...
+.SH SYNOPSIS
+.B stx fetch
+[OPTIONS]
+.SH DESCRIPTION
+Fetch daily-adjusted OHLCV for symbols into the local cache.
+.SH OPTIONS
+.TP
+\fB\-\-cache\-dir\fP TEXT
+Root for raw/ and canonical/.  [default: data]
+.TP
+\fB\-\-symbols\fP TEXT
+Ticker symbols (repeatable). Default: pilot universe.
+.TP
+\fB\-\-refresh\fP
+Re-download and overwrite canonical CSV.

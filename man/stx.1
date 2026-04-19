@@ -1,27 +1,52 @@
 .TH "STX" "1" "2026-04-19" "0.1.0" "stx Manual"
 .SH NAME
-stx \- Run a walk-forward experiment from config...
+stx \- Leakage-safe walk-forward experiments...
 .SH SYNOPSIS
 .B stx
-[OPTIONS]
+[OPTIONS] COMMAND [ARGS]...
 .SH DESCRIPTION
-Run a walk-forward experiment from config (single-symbol or universe).
+Leakage-safe walk-forward experiments (single-symbol or universe) and data helpers.
 .SH OPTIONS
 .TP
-\fB\-c,\fP \-\-config FILE
-Experiment YAML.  [default: (configs/default.yaml or $STX_CONFIG)]
+\fB\-v,\fP \-\-verbose
+More log detail (-v INFO, -vv DEBUG).
 .TP
-\fB\-\-synthetic\fP
-Use synthetic candles (no API).
+\fB\-q,\fP \-\-quiet
+Only warnings and errors.
 .TP
-\fB\-\-device\fP NAME
-PyTorch device (overrides YAML and STX_DEVICE).
+\fB\-\-log\-file\fP FILE
+Also append logs to this file.
 .TP
-\fB\-\-seed\fP INTEGER
-Override YAML seed (after STX_SEED / file).
+\fB\-\-no\-color\fP
+Disable styled output (or set NO_COLOR).
 .TP
-\fB\-\-output\-format\fP [text|json]
-text: one-line summary; json: full summary dict on stdout.  [default: text]
+\fB\-\-rich\fP
+Use Rich for fold/epoch lines when the 'rich' package is installed.
 .TP
-\fB\-\-dry\-run\fP
-Resolve data and print fold plan only (no training).
+\fB\-\-version\fP
+Show the version and exit.
+.SH COMMANDS
+.PP
+\fBbacktest\fP
+  Run a walk-forward experiment from config...
+  See \fBstx-backtest(1)\fP for full documentation on the \fBbacktest\fP command.
+.PP
+\fBfetch\fP
+  Fetch daily-adjusted OHLCV for symbols...
+  See \fBstx-fetch(1)\fP for full documentation on the \fBfetch\fP command.
+.PP
+\fBsweep\fP
+  Run loss sweep (mse, listnet, approx_ndcg)...
+  See \fBstx-sweep(1)\fP for full documentation on the \fBsweep\fP command.
+.PP
+\fBconfig\fP
+  Inspect merged effective configuration...
+  See \fBstx-config(1)\fP for full documentation on the \fBconfig\fP command.
+.PP
+\fBvalidate\fP
+  Load and validate a config (Pydantic);...
+  See \fBstx-validate(1)\fP for full documentation on the \fBvalidate\fP command.
+.PP
+\fBversion\fP
+  Print version and runtime device info...
+  See \fBstx-version(1)\fP for full documentation on the \fBversion\fP command.

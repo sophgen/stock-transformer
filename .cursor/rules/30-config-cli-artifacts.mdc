@@ -2,7 +2,7 @@
 description: YAML configs, CLI entrypoint, exit codes, and run artifacts
 globs:
   - "configs/**/*.yaml"
-  - "src/stock_transformer/cli.py"
+  - "src/stock_transformer/cli/**/*.py"
   - "src/stock_transformer/backtest/**/*.py"
 alwaysApply: false
 ---
@@ -30,7 +30,7 @@ alwaysApply: false
 
 ## CLI (`stx`)
 
-- Entrypoint: `src/stock_transformer/cli.py::main`.
+- Entrypoint: `src/stock_transformer/cli/__init__.py::main` (package) or `python -m stock_transformer.cli`.
 - `-c/--config PATH` (default `configs/default.yaml` or `$STX_CONFIG`), `--synthetic` to force the synthetic path (no network).
 - `--device NAME` overrides YAML `device` and `STX_DEVICE` (`auto`, `mps`, `cpu`, `cuda`, `cuda:N`).
 - **Dispatch (M7b):** `stx backtest` loads YAML via `prepare_backtest_config`, then calls `run_experiment` (single-symbol) or `run_universe_experiment` (universe) according to `experiment_mode`. Helpers `run_from_config_path` / `run_single_symbol_from_config_path` / `run_universe_from_config_path` wrap the same merge step for library use.

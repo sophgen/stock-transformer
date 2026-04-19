@@ -1,0 +1,17 @@
+.TH "STX CONFIG" "1" "2026-04-19" "0.1.0" "stx config Manual"
+.SH NAME
+stx\-config \- Inspect merged effective configuration...
+.SH SYNOPSIS
+.B stx config
+[OPTIONS] COMMAND [ARGS]...
+.SH DESCRIPTION
+Inspect merged effective configuration (flag > env > file > defaults).
+.SH COMMANDS
+.PP
+\fBshow\fP
+  Print merged, validated config as YAML.
+  See \fBstx config-show(1)\fP for full documentation on the \fBshow\fP command.
+.PP
+\fBdiff\fP
+  Print keys that differ from Pydantic...
+  See \fBstx config-diff(1)\fP for full documentation on the \fBdiff\fP command.
