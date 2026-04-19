@@ -60,7 +60,6 @@ def synthetic_multitimeframe_candles(
     timestamps overlap realistically.
     """
     rng = np.random.default_rng(seed)
-    allowed = {tf for tf, *_ in _TF_SPEC}
     specs = _TF_SPEC if timeframes is None else [s for s in _TF_SPEC if s[0] in set(timeframes)]
 
     result: dict[str, pd.DataFrame] = {}

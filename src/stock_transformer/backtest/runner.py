@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from stock_transformer.backtest.walkforward import (
     assert_fold_chronology,
     generate_folds,
 )
+from stock_transformer.config_validate import validate_single_symbol_config
 from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_timeframe
 from stock_transformer.data.synthetic import synthetic_multitimeframe_candles
 from stock_transformer.features.sequences import (
@@ -160,24 +162,34 @@ def tune_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
 # ── main experiment loop ───────────────────────────────────────────────────
 
 
+def run_experiment_dispatch(
+    config: dict[str, Any],
+    *,
+    use_synthetic: bool = False,
+) -> dict[str, Any]:
+    """Load-free dispatch: universe vs single-symbol experiment."""
+    if str(config.get("experiment_mode", "single_symbol")).lower() == "universe":
+        from stock_transformer.backtest.universe_runner import run_universe_experiment
+
+        return run_universe_experiment(config, use_synthetic=use_synthetic)
+    return run_experiment(config, use_synthetic=use_synthetic)
+
+
 def run_experiment(
     config: dict[str, Any],
     *,
     use_synthetic: bool = False,
     skip_fetch: bool = False,
 ) -> dict[str, Any]:
-    """Run multi-timeframe walk-forward experiment; write artifacts."""
-
-    if str(config.get("experiment_mode", "single_symbol")).lower() == "universe":
-        from stock_transformer.backtest.universe_runner import run_universe_experiment
-
-        return run_universe_experiment(config, use_synthetic=use_synthetic)
+    """Run multi-timeframe walk-forward experiment; write artifacts (single-symbol mode only)."""
+    validate_single_symbol_config(config)
 
     device = resolve_device(config.get("device", "auto"))
     cache_dir = Path(config.get("cache_dir", "data"))
     art = Path(config.get("artifacts_dir", "artifacts"))
     art.mkdir(parents=True, exist_ok=True)
-    run_dir = art / f"run_{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}"
+    ts_part = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M%S")
+    run_dir = art / f"run_{ts_part}_{uuid.uuid4().hex[:8]}"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config_snapshot.yaml").write_text(yaml.dump(config, sort_keys=True))
 
@@ -259,56 +271,78 @@ def run_experiment(
     # ── 3. walk-forward loop ───────────────────────────────────────────
     fold_rows: list[dict[str, Any]] = []
     all_preds: list[pd.DataFrame] = []
+    fold_errors: list[dict[str, Any]] = []
 
     for fold in folds:
-        assert_fold_chronology(ts_pred, fold)
+        try:
+            assert_fold_chronology(ts_pred, fold)
 
-        sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
+            sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
 
-        model = _train_model(
-            X_feat[sl_tr], X_tf_ids[sl_tr], X_mask[sl_tr], y_reg[sl_tr], y_dir[sl_tr],
-            X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], y_reg[sl_va], y_dir[sl_va],
-            config, device,
-        )
+            model = _train_model(
+                X_feat[sl_tr], X_tf_ids[sl_tr], X_mask[sl_tr], y_reg[sl_tr], y_dir[sl_tr],
+                X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], y_reg[sl_va], y_dir[sl_va],
+                config, device,
+            )
 
-        # Validation — tune threshold
-        candle_va, prob_va = _predict(model, X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], device)
-        thr = tune_threshold(y_dir[sl_va], prob_va)
+            # Validation — tune threshold
+            candle_va, prob_va = _predict(model, X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], device)
+            thr = tune_threshold(y_dir[sl_va], prob_va)
 
-        # Test
-        candle_te, prob_te = _predict(model, X_feat[sl_te], X_tf_ids[sl_te], X_mask[sl_te], device)
-        m_cls = classification_metrics(y_dir[sl_te], prob_te, threshold=thr)
-        m_reg = regression_metrics(y_reg[sl_te], candle_te)
+            # Test
+            candle_te, prob_te = _predict(model, X_feat[sl_te], X_tf_ids[sl_te], X_mask[sl_te], device)
+            m_cls = classification_metrics(y_dir[sl_te], prob_te, threshold=thr)
+            m_reg = regression_metrics(y_reg[sl_te], candle_te)
 
-        row: dict[str, Any] = {"fold_id": fold.fold_id, "threshold": thr}
-        row.update({f"test_cls_{k}": v for k, v in m_cls.items()})
-        row.update({f"test_reg_{k}": v for k, v in m_reg.items()})
-        fold_rows.append(row)
+            row: dict[str, Any] = {"fold_id": fold.fold_id, "threshold": thr}
+            row.update({f"test_cls_{k}": v for k, v in m_cls.items()})
+            row.update({f"test_reg_{k}": v for k, v in m_reg.items()})
+            fold_rows.append(row)
 
-        pred_df = pd.DataFrame(
-            {
-                "timestamp": ts_pred.iloc[sl_te].values if hasattr(ts_pred, "iloc") else ts_pred[sl_te.start:sl_te.stop],
-                "symbol": symbol,
-                "y_dir_true": y_dir[sl_te],
-                "y_dir_prob": prob_te,
-                "y_dir_pred": (prob_te >= thr).astype(int),
-                "y_close_ret_true": y_reg[sl_te, 3] if y_reg.ndim == 2 else y_reg[sl_te],
-                "y_close_ret_pred": candle_te[:, 3] if candle_te.ndim == 2 else candle_te,
-                "fold_id": fold.fold_id,
-            }
-        )
-        all_preds.append(pred_df)
+            pred_df = pd.DataFrame(
+                {
+                    "timestamp": ts_pred.iloc[sl_te].values if hasattr(ts_pred, "iloc") else ts_pred[sl_te.start:sl_te.stop],
+                    "symbol": symbol,
+                    "y_dir_true": y_dir[sl_te],
+                    "y_dir_prob": prob_te,
+                    "y_dir_pred": (prob_te >= thr).astype(int),
+                    "y_close_ret_true": y_reg[sl_te, 3] if y_reg.ndim == 2 else y_reg[sl_te],
+                    "y_close_ret_pred": candle_te[:, 3] if candle_te.ndim == 2 else candle_te,
+                    "fold_id": fold.fold_id,
+                }
+            )
+            all_preds.append(pred_df)
+        except Exception as exc:  # noqa: BLE001
+            fold_errors.append({"fold_id": fold.fold_id, "error": str(exc)})
+            continue
 
-    agg = aggregate_fold_metrics(fold_rows)
-    summary["aggregate"] = agg
     summary["folds"] = fold_rows
+    if fold_errors:
+        summary["error"] = "partial_failure"
+        summary["fold_errors"] = fold_errors
+    if fold_rows:
+        summary["aggregate"] = aggregate_fold_metrics(fold_rows)
 
     pred_path = run_dir / f"predictions__{symbol}.csv"
-    pd.concat(all_preds, ignore_index=True).to_csv(pred_path, index=False)
+    _pred_cols = [
+        "timestamp",
+        "symbol",
+        "y_dir_true",
+        "y_dir_prob",
+        "y_dir_pred",
+        "y_close_ret_true",
+        "y_close_ret_pred",
+        "fold_id",
+    ]
+    if all_preds:
+        pd.concat(all_preds, ignore_index=True).to_csv(pred_path, index=False)
+    else:
+        pd.DataFrame(columns=_pred_cols).to_csv(pred_path, index=False)
+
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     return summary
 
 
 def run_from_config_path(path: str | Path, *, synthetic: bool = False) -> dict[str, Any]:
     cfg = load_config(path)
-    return run_experiment(cfg, use_synthetic=synthetic)
+    return run_experiment_dispatch(cfg, use_synthetic=synthetic)
