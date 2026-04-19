@@ -102,6 +102,9 @@ for a fast smoke run; adjust as needed. Raw JSON and canonical CSV live under
 
 - `-c` / `--config` — experiment YAML (default: `configs/default.yaml`).
 - `--synthetic` — skip the API and use built-in random-walk data.
+- `--device` — PyTorch device override (`auto`, `mps`, `cpu`, `cuda`, `cuda:N`). Takes precedence over the `device` key in YAML. You can also set **`STX_DEVICE`** in `.env` or the environment (overridden by `--device`).
+
+On **Apple Silicon**, `device: "auto"` or `device: "mps"` in YAML uses the GPU backend when PyTorch reports MPS as available; use `cpu` if you hit an unsupported op or want deterministic CPU-only runs.
 
 Exit codes: **0** success, **1** missing/unreadable config, **2** partial failure
 (e.g. a walk-forward fold raised) or no folds — see `summary.json` and optional

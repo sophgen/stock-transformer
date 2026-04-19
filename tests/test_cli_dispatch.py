@@ -42,6 +42,37 @@ def test_cli_universe_synthetic_exit_0(tmp_path):
     assert r.returncode == 0, r.stderr + r.stdout
 
 
+def test_cli_device_flag_overrides_yaml(tmp_path):
+    """``--device`` must win over YAML (e.g. file says mps, CI runs on cpu)."""
+    cfg = yaml.safe_load((REPO / "configs" / "universe.yaml").read_text())
+    cfg["artifacts_dir"] = str(tmp_path / "a")
+    cfg["device"] = "mps"
+    cfg["train_bars"] = 50
+    cfg["val_bars"] = 15
+    cfg["test_bars"] = 15
+    cfg["step_bars"] = 15
+    cfg["epochs"] = 1
+    cfg["synthetic_n_bars"] = 200
+    p = tmp_path / "u.yaml"
+    p.write_text(yaml.dump(cfg))
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "stock_transformer.cli",
+            "--synthetic",
+            "-c",
+            str(p),
+            "--device",
+            "cpu",
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+
+
 def test_cli_partial_failure_exit_2(tmp_path, monkeypatch):
     import stock_transformer.cli as cli_mod
 

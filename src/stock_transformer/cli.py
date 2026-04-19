@@ -30,11 +30,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use synthetic random-walk candles (no Alpha Vantage API calls)",
     )
+    p.add_argument(
+        "--device",
+        default=None,
+        metavar="NAME",
+        help="PyTorch device: auto, mps (Apple Silicon), cpu, cuda, cuda:N. "
+        "Overrides YAML and STX_DEVICE env.",
+    )
     args = p.parse_args(argv)
     if not args.config.exists():
         print(f"Config not found: {args.config}", file=sys.stderr)
         return 1
-    summary = run_from_config_path(args.config, synthetic=args.synthetic)
+    summary = run_from_config_path(
+        args.config,
+        synthetic=args.synthetic,
+        device=args.device,
+    )
     print("Run complete. Artifacts:", summary.get("run_dir"))
     if summary.get("fold_errors"):
         return 2
