@@ -57,6 +57,12 @@ class TransformerRanker(nn.Module):
         except TypeError:
             self.cross_enc = nn.TransformerEncoder(c_layer, num_layers=num_cross_layers)
 
+        self.register_buffer(
+            "_causal_attn_mask",
+            nn.Transformer.generate_square_subsequent_mask(max_seq_len),
+            persistent=False,
+        )
+
         self.norm = nn.LayerNorm(d_model)
         self.score_head = nn.Linear(d_model, 1)
 
@@ -87,7 +93,8 @@ class TransformerRanker(nn.Module):
 
         h = h.permute(0, 2, 1, 3).reshape(B * S, L, self.d_model)
         pm = padding_mask.permute(0, 2, 1).reshape(B * S, L)
-        causal = nn.Transformer.generate_square_subsequent_mask(L, device=x.device, dtype=h.dtype)
+        causal = self._causal_attn_mask[:L, :L].to(device=x.device, dtype=h.dtype)
+        # Float padding mask matches ``causal`` dtype (PyTorch warns on bool+float mix).
         pad_attn = pm.to(dtype=h.dtype) * torch.finfo(h.dtype).min
         h = self.temporal_enc(h, mask=causal, src_key_padding_mask=pad_attn)
         h = h.view(B, S, L, self.d_model)

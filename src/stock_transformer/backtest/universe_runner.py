@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from stock_transformer.backtest.portfolio_sim import (
     simulate_topk_portfolio,
 )
 from stock_transformer.backtest.walkforward import WalkForwardConfig, assert_fold_chronology, generate_folds
+from stock_transformer.config_validate import validate_universe_config
 from stock_transformer.data.align import align_universe_ohlcv
 from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_universe
 from stock_transformer.data.synthetic import synthetic_universe_candles
@@ -83,22 +85,15 @@ def _git_head_short(cwd: Path | None = None) -> str:
         return ""
 
 
-def _ranks_descending(vals: np.ndarray) -> np.ndarray:
+def _ranks_descending_matrix(vals: np.ndarray) -> np.ndarray:
+    """Per-row descending ranks; NaN where the value is non-finite (same as legacy ``_ranks_descending`` per row)."""
+    vals = np.asarray(vals, dtype=np.float64)
     out = np.full(vals.shape, np.nan, dtype=np.float64)
-    m = np.isfinite(vals)
-    if not np.any(m):
-        return out
-    out[m] = rankdata(-vals[m], method="average")
-    return out
-
-
-def _peer_relative_raw(raw_row: np.ndarray) -> np.ndarray:
-    m = np.isfinite(raw_row)
-    out = np.full_like(raw_row, np.nan, dtype=np.float64)
-    if not np.any(m):
-        return out
-    med = float(np.nanmedian(raw_row[m]))
-    out[m] = raw_row[m] - med
+    for i in range(vals.shape[0]):
+        row = vals[i]
+        m = np.isfinite(row)
+        if m.any():
+            out[i, m] = rankdata(-row[m], method="average")
     return out
 
 
@@ -196,12 +191,14 @@ def run_universe_experiment(
     *,
     use_synthetic: bool = False,
 ) -> dict[str, Any]:
+    validate_universe_config(config)
     u = load_universe_config_from_dict(config)
     device = resolve_device(config.get("device", "auto"))
     cache_dir = Path(config.get("cache_dir", "data"))
     art = Path(config.get("artifacts_dir", "artifacts"))
     art.mkdir(parents=True, exist_ok=True)
-    run_dir = art / f"universe_run_{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}"
+    ts_part = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M%S")
+    run_dir = art / f"universe_run_{ts_part}_{uuid.uuid4().hex[:8]}"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config_snapshot.yaml").write_text(yaml.dump(config, sort_keys=True))
 
@@ -337,6 +334,7 @@ def run_universe_experiment(
         "run_dir": str(run_dir),
         "loss": loss_name,
         "feature_schema_hash": fs["hash"],
+        "git_sha": _git_head_short(),
     }
 
     if not folds:
@@ -349,7 +347,7 @@ def run_universe_experiment(
         return summary
 
     fold_rows: list[dict[str, Any]] = []
-    all_pred_rows: list[pd.DataFrame] = []
+    pred_records: list[dict[str, Any]] = []
     fold_errors: list[dict[str, Any]] = []
     per_fold_sector: list[dict[str, dict[str, float]]] = []
     portfolio_fold_summaries: list[dict[str, Any]] = []
@@ -439,8 +437,8 @@ def run_universe_experiment(
                 per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2)
             )
 
+            pad_te = mask[sl_te][:, -1, :]
             if psim_enabled:
-                pad_te = mask[sl_te][:, -1, :]
                 psim_res = simulate_topk_portfolio(
                     pred_te,
                     raw_te,
@@ -464,27 +462,29 @@ def run_universe_experiment(
                     }
                 )
 
-            for i, j in enumerate(range(sl_te.start, sl_te.stop)):
-                ts = ts_pred.iloc[j]
+            ranks_p = _ranks_descending_matrix(pred_te)
+            ranks_t = _ranks_descending_matrix(raw_te)
+            y_rel_all = raw_te - np.nanmedian(raw_te, axis=1, keepdims=True)
+            for i in range(pred_te.shape[0]):
+                ts = ts_pred.iloc[sl_te.start + i]
+                ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
                 fold_id = fold.fold_id
-                ranks_p = _ranks_descending(pred_te[i])
-                ranks_t = _ranks_descending(raw_te[i])
-                y_rel_row = _peer_relative_raw(raw_te[i])
                 for si, sym in enumerate(symbols):
-                    pad = mask[sl_te][i, -1, si]
+                    pad = pad_te[i, si]
                     score = np.nan if pad else float(pred_te[i, si])
-                    rec = {
-                        "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
-                        "symbol": sym,
-                        "timeframe": tf,
-                        "y_true_raw_return": raw_te[i, si],
-                        "y_true_relative_return": y_rel_row[si],
-                        "y_score": score,
-                        "y_rank_pred": ranks_p[si],
-                        "y_rank_true": ranks_t[si],
-                        "fold_id": fold_id,
-                    }
-                    all_pred_rows.append(pd.DataFrame([rec]))
+                    pred_records.append(
+                        {
+                            "timestamp": ts_iso,
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "y_true_raw_return": raw_te[i, si],
+                            "y_true_relative_return": y_rel_all[i, si],
+                            "y_score": score,
+                            "y_rank_pred": ranks_p[i, si],
+                            "y_rank_true": ranks_t[i, si],
+                            "fold_id": fold_id,
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001
             fold_errors.append({"fold_id": fold.fold_id, "error": str(exc)})
             continue
@@ -533,8 +533,8 @@ def run_universe_experiment(
             }
 
     pred_path = run_dir / "predictions_universe.csv"
-    if all_pred_rows:
-        pd.concat(all_pred_rows, ignore_index=True).to_csv(pred_path, index=False)
+    if pred_records:
+        pd.DataFrame(pred_records).to_csv(pred_path, index=False)
     else:
         pred_path.write_text(
             "timestamp,symbol,timeframe,y_true_raw_return,y_true_relative_return,"

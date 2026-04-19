@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+
 @dataclass(frozen=True)
 class WalkForwardConfig:
     """Lengths are in **window samples** (one per prediction time), not raw bars."""
