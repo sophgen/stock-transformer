@@ -14,7 +14,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import pandas as pd
 import requests
@@ -61,9 +61,7 @@ class AlphaVantageClient:
         use_cache: bool = True,
     ) -> dict[str, Any]:
         if not self.api_key:
-            raise RuntimeError(
-                "Missing API key: set ALPHAVANTAGE_API_KEY or pass api_key= to AlphaVantageClient."
-            )
+            raise RuntimeError("Missing API key: set ALPHAVANTAGE_API_KEY or pass api_key= to AlphaVantageClient.")
         full = {"function": function, "apikey": self.api_key, **params}
         raw_path = raw_response_path(self.cache_root, function, full)
         if use_cache and raw_path.exists():
@@ -111,7 +109,8 @@ def fetch_candles_for_timeframe(
     tf = timeframe.lower()
     st = store
     if st in ("csv", "parquet"):
-        cstore = CandleStore(client.cache_root, backend=st)
+        bk = cast(Literal["csv", "parquet"], st)
+        cstore = CandleStore(client.cache_root, backend=bk)
         if use_cache and not force_refresh_canonical:
             cached = cstore.read(symbol, tf)
             if cached is not None:
@@ -140,9 +139,7 @@ def fetch_candles_for_timeframe(
         payload = client.query(fn, params, use_cache=use_cache)
         if str(data_source).lower() == "mcp":
             payload = unwrap_mcp_alphavantage_payload(payload)
-        df = canonicalize_series(
-            payload, symbol=symbol, timeframe="daily", adjusted=use_adjusted_daily
-        )
+        df = canonicalize_series(payload, symbol=symbol, timeframe="daily", adjusted=use_adjusted_daily)
         tag = "daily_adj" if use_adjusted_daily else "daily_raw"
 
     elif tf == "weekly":
@@ -151,9 +148,7 @@ def fetch_candles_for_timeframe(
         payload = client.query(fn, params, use_cache=use_cache)
         if str(data_source).lower() == "mcp":
             payload = unwrap_mcp_alphavantage_payload(payload)
-        df = canonicalize_series(
-            payload, symbol=symbol, timeframe="weekly", adjusted=use_adjusted_weekly
-        )
+        df = canonicalize_series(payload, symbol=symbol, timeframe="weekly", adjusted=use_adjusted_weekly)
         tag = "weekly_adj" if use_adjusted_weekly else "weekly_raw"
 
     elif tf == "monthly":
@@ -162,16 +157,15 @@ def fetch_candles_for_timeframe(
         payload = client.query(fn, params, use_cache=use_cache)
         if str(data_source).lower() == "mcp":
             payload = unwrap_mcp_alphavantage_payload(payload)
-        df = canonicalize_series(
-            payload, symbol=symbol, timeframe="monthly", adjusted=use_adjusted_monthly
-        )
+        df = canonicalize_series(payload, symbol=symbol, timeframe="monthly", adjusted=use_adjusted_monthly)
         tag = "monthly_adj" if use_adjusted_monthly else "monthly_raw"
 
     else:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
 
     if st in ("csv", "parquet"):
-        CandleStore(client.cache_root, backend=st).write(symbol, tf, df)
+        bk = cast(Literal["csv", "parquet"], st)
+        CandleStore(client.cache_root, backend=bk).write(symbol, tf, df)
     else:
         out_path = canonical_candles_path(client.cache_root, symbol, tf, tag)
         if force_refresh_canonical or not out_path.exists():

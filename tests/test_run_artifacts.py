@@ -10,9 +10,7 @@ from stock_transformer.backtest.universe_runner import run_universe_experiment
 
 
 def test_universe_run_writes_all_artifacts(tmp_path):
-    cfg = yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / "configs" / "universe.yaml").read_text()
-    )
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs" / "universe.yaml").read_text())
     cfg["artifacts_dir"] = str(tmp_path / "art")
     cfg["device"] = "cpu"
     cfg["train_bars"] = 50

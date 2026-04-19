@@ -1,14 +1,14 @@
 """Sequence builder and no-lookahead guarantees."""
 
 import numpy as np
-import pandas as pd
+
+from stock_transformer.data.synthetic import synthetic_random_walk_candles
 from stock_transformer.features.sequences import (
     build_direction_labels,
     build_feature_matrix,
     build_windows,
     validate_no_lookahead,
 )
-from stock_transformer.data.synthetic import synthetic_random_walk_candles
 
 
 def test_direction_labels():

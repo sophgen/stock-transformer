@@ -22,14 +22,10 @@ def test_candle_log_returns_shape():
 
 
 def test_multitimeframe_samples_shape():
-    data = synthetic_multitimeframe_candles(
-        n_daily=300, seed=1, timeframes=["monthly", "weekly", "daily"]
-    )
+    data = synthetic_multitimeframe_candles(n_daily=300, seed=1, timeframes=["monthly", "weekly", "daily"])
     lookbacks = {"monthly": 4, "weekly": 6, "daily": 16}
     max_seq = 64
-    X_f, X_tf, X_m, y_r, y_d, ts = build_multitimeframe_samples(
-        data, "daily", lookbacks, max_seq_len=max_seq
-    )
+    X_f, X_tf, X_m, y_r, y_d, ts = build_multitimeframe_samples(data, "daily", lookbacks, max_seq_len=max_seq)
     n = X_f.shape[0]
     assert n > 0
     assert X_f.shape == (n, max_seq, N_CANDLE_FEATURES)
@@ -51,16 +47,12 @@ def test_multitimeframe_samples_shape():
 
 def test_no_lookahead_in_samples():
     """Verify every token timestamp is <= the prediction cutoff."""
-    data = synthetic_multitimeframe_candles(
-        n_daily=200, seed=2, timeframes=["weekly", "daily"]
-    )
+    data = synthetic_multitimeframe_candles(n_daily=200, seed=2, timeframes=["weekly", "daily"])
     pred_df = data["daily"].sort_values("timestamp").reset_index(drop=True)
     lookbacks = {"weekly": 4, "daily": 10}
     max_seq = 32
 
-    X_f, X_tf, X_m, y_r, y_d, ts = build_multitimeframe_samples(
-        data, "daily", lookbacks, max_seq_len=max_seq
-    )
+    X_f, X_tf, X_m, y_r, y_d, ts = build_multitimeframe_samples(data, "daily", lookbacks, max_seq_len=max_seq)
 
     pred_ts = pred_df["timestamp"].values
     for i in range(len(ts)):
@@ -72,15 +64,11 @@ def test_no_lookahead_in_samples():
 
 
 def test_model_forward_pass():
-    data = synthetic_multitimeframe_candles(
-        n_daily=200, seed=3, timeframes=["weekly", "daily"]
-    )
+    data = synthetic_multitimeframe_candles(n_daily=200, seed=3, timeframes=["weekly", "daily"])
     lookbacks = {"weekly": 4, "daily": 10}
     max_seq = 32
 
-    X_f, X_tf, X_m, y_r, y_d, ts = build_multitimeframe_samples(
-        data, "daily", lookbacks, max_seq_len=max_seq
-    )
+    X_f, X_tf, X_m, y_r, y_d, ts = build_multitimeframe_samples(data, "daily", lookbacks, max_seq_len=max_seq)
 
     model = CandleTransformer(
         n_candle_features=N_CANDLE_FEATURES,
@@ -106,7 +94,5 @@ def test_model_forward_pass():
 
 def test_direction_labels_binary():
     data = synthetic_multitimeframe_candles(n_daily=200, seed=4, timeframes=["daily"])
-    _, _, _, _, y_d, _ = build_multitimeframe_samples(
-        data, "daily", {"daily": 10}, max_seq_len=16
-    )
+    _, _, _, _, y_d, _ = build_multitimeframe_samples(data, "daily", {"daily": 10}, max_seq_len=16)
     assert set(np.unique(y_d)).issubset({0.0, 1.0})

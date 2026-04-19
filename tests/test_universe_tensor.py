@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+
 from stock_transformer.data.align import align_universe_ohlcv
 from stock_transformer.data.synthetic import synthetic_universe_candles
 from stock_transformer.features.universe_tensor import build_universe_samples

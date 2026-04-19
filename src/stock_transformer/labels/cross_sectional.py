@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 
 
@@ -45,7 +47,7 @@ def cross_sectional_targets(
 
 def _demean_by_func(
     raw: np.ndarray,
-    center_fn: callable,
+    center_fn: Callable[[np.ndarray, np.ndarray], float],
 ) -> np.ndarray:
     out = np.full_like(raw, np.nan, dtype=np.float64)
     for i in range(raw.shape[0]):
@@ -65,19 +67,15 @@ def _sector_neutral_demean(raw: np.ndarray, sectors: np.ndarray) -> np.ndarray:
     n, s = raw.shape
     if len(sectors) != s:
         raise ValueError("sectors must have length n_symbols")
-    for i in range(n):
-        row = raw[i]
-        for j in range(s):
-            if not np.isfinite(row[j]):
-                continue
-            sec = sectors[j]
-            peer = np.isfinite(row) & (sectors == sec)
-            if not np.any(peer):
-                continue
-            med = float(np.nanmedian(row[peer]))
-            if not np.isfinite(med):
-                continue
-            out[i, j] = row[j] - med
+    for sec in np.unique(sectors):
+        peer = sectors == sec
+        if not np.any(peer):
+            continue
+        block = raw[:, peer]
+        med = np.nanmedian(block, axis=1, keepdims=True)
+        adj = block - med
+        fin = np.isfinite(raw[:, peer])
+        out[:, peer] = np.where(fin, adj, np.nan)
     return out
 
 

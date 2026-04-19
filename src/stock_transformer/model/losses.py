@@ -56,17 +56,18 @@ def approx_ndcg_loss(
         order = torch.argsort(g, descending=True)
         discounts = torch.log2(torch.arange(2, nv + 2, device=pred.device, dtype=s.dtype))
         idcg = (g[order] / discounts).sum().clamp(min=1e-12)
-        pair = torch.tensor(0.0, device=pred.device, dtype=s.dtype)
-        n_pairs = 0
-        for ia in range(nv):
-            for ib in range(nv):
-                if g[ia] <= g[ib]:
-                    continue
-                pair = pair + F.softplus(-a * (s[ia] - s[ib])) * (g[ia] - g[ib])
-                n_pairs += 1
-        if n_pairs == 0:
+        g_row = g.unsqueeze(1)
+        g_col = g.unsqueeze(0)
+        gain_diff = g_row - g_col
+        pair_mask = gain_diff > 0
+        s_row = s.unsqueeze(1)
+        s_col = s.unsqueeze(0)
+        sdiff = s_row - s_col
+        contrib = F.softplus(-a * sdiff) * gain_diff * pair_mask.to(dtype=s.dtype)
+        n_pairs = pair_mask.sum()
+        if n_pairs.item() == 0:
             continue
-        parts.append(pair / (idcg * float(n_pairs)))
+        parts.append(contrib.sum() / (idcg * n_pairs.to(dtype=s.dtype)))
     if not parts:
         return torch.tensor(0.0, device=pred.device, dtype=pred.dtype, requires_grad=True)
     return torch.stack(parts).mean()

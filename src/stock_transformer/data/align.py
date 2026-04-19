@@ -12,14 +12,14 @@ def align_universe_ohlcv(
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """Outer-merge all symbols on ``timestamp``; sort; return wide frame + close matrix.
 
-    Wide columns: ``open__SYM``, ``high__SYM``, ``low__SYM``, ``close__SYM``, ``volume__SYM``.
+       Wide columns: ``open__SYM``, ``high__SYM``, ``low__SYM``, ``close__SYM``, ``volume__SYM``.
 
-    Returns
-    -------
-    panel
- Sorted DataFrame with ``timestamp`` first column.
-    close
-        ``[n_rows, n_symbols]`` float64, NaN where missing.
+       Returns
+       -------
+       panel
+    Sorted DataFrame with ``timestamp`` first column.
+       close
+           ``[n_rows, n_symbols]`` float64, NaN where missing.
     """
     for sym in symbols:
         if sym not in candles_by_symbol:

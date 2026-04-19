@@ -66,6 +66,4 @@ def test_approx_ndcg_lower_when_pred_tracks_gains():
     m = torch.tensor([[True, True, True]])
     pred_good = tgt.clone()
     pred_bad = -tgt
-    assert approx_ndcg_loss(pred_good, tgt, mask=m, alpha=5.0) < approx_ndcg_loss(
-        pred_bad, tgt, mask=m, alpha=5.0
-    )
+    assert approx_ndcg_loss(pred_good, tgt, mask=m, alpha=5.0) < approx_ndcg_loss(pred_bad, tgt, mask=m, alpha=5.0)

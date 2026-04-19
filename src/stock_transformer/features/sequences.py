@@ -100,7 +100,11 @@ def build_multitimeframe_samples(
         df_s = df.sort_values("timestamp").reset_index(drop=True)
         feats = candle_log_returns(df_s)
         ts_arr = df_s["timestamp"].values  # datetime64
-        precomputed[tf] = (ts_arr, feats, np.array([TIMEFRAME_IDS.get(tf, len(TIMEFRAME_IDS))] * len(df_s), dtype=np.int64))
+        precomputed[tf] = (
+            ts_arr,
+            feats,
+            np.array([TIMEFRAME_IDS.get(tf, len(TIMEFRAME_IDS))] * len(df_s), dtype=np.int64),
+        )
 
     all_X: list[np.ndarray] = []
     all_tf: list[np.ndarray] = []
@@ -119,11 +123,11 @@ def build_multitimeframe_samples(
         for tf in candles_by_tf:
             ts_arr, feat_arr, tf_id_arr = precomputed[tf]
             lb = lookbacks.get(tf, 32)
-            valid = np.where(ts_arr <= cutoff)[0]
-            if len(valid) == 0:
+            idx_end = int(np.searchsorted(ts_arr, cutoff, side="right")) - 1
+            if idx_end < 0:
                 continue
-            take = valid[-lb:]
-            for j in take:
+            start = max(0, idx_end - lb + 1)
+            for j in range(start, idx_end + 1):
                 tokens_feats.append(feat_arr[j])
                 tokens_tf.append(int(tf_id_arr[j]))
                 tokens_ts.append(ts_arr[j])
@@ -192,9 +196,7 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
     hl_range = (h - low) / c.replace(0, np.nan)
     oc_ratio = (c - o) / c.replace(0, np.nan)
 
-    feat = pd.DataFrame(
-        {"log_ret": log_ret, "hl_range": hl_range, "oc_ratio": oc_ratio, "log_vol": np.log1p(v)}
-    )
+    feat = pd.DataFrame({"log_ret": log_ret, "hl_range": hl_range, "oc_ratio": oc_ratio, "log_vol": np.log1p(v)})
     valid = feat.notna().all(axis=1)
     aligned = df.loc[valid].reset_index(drop=True)
     X = feat.loc[valid].to_numpy(dtype=np.float64)

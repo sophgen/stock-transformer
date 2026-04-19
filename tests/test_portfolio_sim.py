@@ -80,7 +80,6 @@ def test_long_short_top_bottom_k():
 
 
 def test_padding_excludes_symbol():
-    n, s = 2, 3
     scores = np.array([[3.0, 2.0, 1.0], [3.0, 2.0, 1.0]])
     r = np.array([[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]])
     pad = np.array([[False, False, True], [False, False, True]])
