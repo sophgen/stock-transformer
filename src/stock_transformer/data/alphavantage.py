@@ -25,6 +25,8 @@ from stock_transformer.data.canonicalize import (
     canonicalize_intraday,
     canonicalize_series,
 )
+from stock_transformer.data.mcp_canonicalize import unwrap_mcp_alphavantage_payload
+from stock_transformer.data.store import CandleStore
 
 BASE_URL = "https://www.alphavantage.co/query"
 
@@ -93,14 +95,27 @@ def fetch_candles_for_timeframe(
     daily_outputsize: str = "full",
     use_cache: bool = True,
     force_refresh_canonical: bool = False,
+    store: str | None = None,
+    data_source: str = "rest",
 ) -> pd.DataFrame:
     """Fetch and return canonical candles for one timeframe.
 
     Supported ``timeframe`` values: ``1min``, ``5min``, ``15min``, ``30min``,
     ``60min``, ``daily``, ``weekly``, ``monthly``.
+
+    ``store``: ``\"csv\"`` or ``\"parquet\"`` for partitioned canonical layout under
+    ``cache_dir/canonical/``; ``None`` keeps legacy ``processed/candles`` CSV.
+    ``data_source``: ``\"rest\"`` (default) or ``\"mcp\"`` (unwrap nested tool JSON).
     """
     symbol = symbol.upper()
     tf = timeframe.lower()
+    st = store
+    if st in ("csv", "parquet"):
+        cstore = CandleStore(client.cache_root, backend=st)
+        if use_cache and not force_refresh_canonical:
+            cached = cstore.read(symbol, tf)
+            if cached is not None:
+                return cached
 
     if tf in {"1min", "5min", "15min", "30min", "60min"}:
         params: dict[str, Any] = {
@@ -114,6 +129,8 @@ def fetch_candles_for_timeframe(
         if intraday_month:
             params["month"] = intraday_month
         payload = client.query("TIME_SERIES_INTRADAY", params, use_cache=use_cache)
+        if str(data_source).lower() == "mcp":
+            payload = unwrap_mcp_alphavantage_payload(payload)
         df = canonicalize_intraday(payload, symbol=symbol, timeframe=tf)
         tag = f"intraday_{tf}_{intraday_month or 'latest'}"
 
@@ -121,6 +138,8 @@ def fetch_candles_for_timeframe(
         fn = "TIME_SERIES_DAILY_ADJUSTED" if use_adjusted_daily else "TIME_SERIES_DAILY"
         params = {"symbol": symbol, "outputsize": daily_outputsize, "datatype": "json"}
         payload = client.query(fn, params, use_cache=use_cache)
+        if str(data_source).lower() == "mcp":
+            payload = unwrap_mcp_alphavantage_payload(payload)
         df = canonicalize_series(
             payload, symbol=symbol, timeframe="daily", adjusted=use_adjusted_daily
         )
@@ -130,6 +149,8 @@ def fetch_candles_for_timeframe(
         fn = "TIME_SERIES_WEEKLY_ADJUSTED" if use_adjusted_weekly else "TIME_SERIES_WEEKLY"
         params = {"symbol": symbol, "datatype": "json"}
         payload = client.query(fn, params, use_cache=use_cache)
+        if str(data_source).lower() == "mcp":
+            payload = unwrap_mcp_alphavantage_payload(payload)
         df = canonicalize_series(
             payload, symbol=symbol, timeframe="weekly", adjusted=use_adjusted_weekly
         )
@@ -139,6 +160,8 @@ def fetch_candles_for_timeframe(
         fn = "TIME_SERIES_MONTHLY_ADJUSTED" if use_adjusted_monthly else "TIME_SERIES_MONTHLY"
         params = {"symbol": symbol, "datatype": "json"}
         payload = client.query(fn, params, use_cache=use_cache)
+        if str(data_source).lower() == "mcp":
+            payload = unwrap_mcp_alphavantage_payload(payload)
         df = canonicalize_series(
             payload, symbol=symbol, timeframe="monthly", adjusted=use_adjusted_monthly
         )
@@ -147,10 +170,13 @@ def fetch_candles_for_timeframe(
     else:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
 
-    out_path = canonical_candles_path(client.cache_root, symbol, tf, tag)
-    if force_refresh_canonical or not out_path.exists():
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_path, index=False)
+    if st in ("csv", "parquet"):
+        CandleStore(client.cache_root, backend=st).write(symbol, tf, df)
+    else:
+        out_path = canonical_candles_path(client.cache_root, symbol, tf, tag)
+        if force_refresh_canonical or not out_path.exists():
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(out_path, index=False)
     return df
 
 
@@ -168,6 +194,8 @@ def fetch_candles_for_universe(
     daily_outputsize: str = "full",
     use_cache: bool = True,
     force_refresh_canonical: bool = False,
+    store: str | None = None,
+    data_source: str = "rest",
 ) -> dict[str, pd.DataFrame]:
     """Fetch canonical candles for every symbol, respecting client throttling."""
     out: dict[str, pd.DataFrame] = {}
@@ -185,5 +213,7 @@ def fetch_candles_for_universe(
             daily_outputsize=daily_outputsize,
             use_cache=use_cache,
             force_refresh_canonical=force_refresh_canonical,
+            store=store,
+            data_source=data_source,
         )
     return out

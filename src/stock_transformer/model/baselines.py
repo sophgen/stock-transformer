@@ -60,6 +60,18 @@ def equal_score_baseline(n_samples: int, n_symbols: int) -> np.ndarray:
     return np.zeros((n_samples, n_symbols), dtype=np.float64)
 
 
+def mean_reversion_rank_scores(
+    close: np.ndarray,
+    *,
+    end_rows: np.ndarray,
+    lookback: int,
+) -> np.ndarray:
+    """Score = negative trailing simple return (opposite of momentum)."""
+    mom = momentum_rank_scores(close, end_rows=end_rows, lookback=lookback)
+    out = np.where(np.isfinite(mom), -mom, np.nan)
+    return out.astype(np.float64, copy=False)
+
+
 def persistence_probs_on_test(y_val: np.ndarray, y_test: np.ndarray) -> np.ndarray:
     """
     Persistence baseline on the test slice: predict previous realized direction.

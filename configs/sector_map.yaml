@@ -1,0 +1,7 @@
+version: 1
+default_sector: "Unknown"
+mapping:
+  MSTR: "Information Technology"
+  IBIT: "Crypto"
+  COIN: "Financials"
+  QQQ: "Index"

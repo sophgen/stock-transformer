@@ -20,8 +20,28 @@ lookback: 32
 # Require at least this many symbols with valid OHLCV at t and t+1.
 min_coverage_symbols: 3
 
-# Label: cross_sectional_return uses peer median at t; raw_return has no demeaning.
-label_mode: "cross_sectional_return" # or "raw_return"
+# Label: cross_sectional_return | raw_return | equal_weighted_return | sector_neutral_return
+label_mode: "cross_sectional_return"
+
+# Optional sector metadata (required for sector_neutral_return).
+sector_map_path: "configs/sector_map.yaml"
+
+# Canonical candle store: csv (partitioned) or parquet (M8).
+store: "csv"
+
+# Training loss: mse | listnet | approx_ndcg
+loss: "mse"
+
+# Explicit numeric features (default: 5 OHLCV tensor columns). Extends F and feature_schema_hash.
+# features:
+#   - open_log_prev_close
+#   - high_log_prev_close
+#   - low_log_prev_close
+#   - close_log_prev_close
+#   - log1p_volume
+
+# Alpha Vantage: rest (default) or mcp (unwrap nested JSON from cached/tool payloads).
+data_source: "rest"
 
 # Alpha Vantage fetch options (same as single-symbol config).
 use_adjusted_daily: true

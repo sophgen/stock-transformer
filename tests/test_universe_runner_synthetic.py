@@ -14,6 +14,7 @@ def test_universe_synthetic_smoke(tmp_path: Path):
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     cfg["artifacts_dir"] = str(tmp_path / "art")
+    cfg["device"] = "cpu"
     cfg["train_bars"] = 80
     cfg["val_bars"] = 20
     cfg["test_bars"] = 20

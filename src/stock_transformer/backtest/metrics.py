@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pandas as pd
+from scipy.stats import kendalltau
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
@@ -44,11 +46,7 @@ def regression_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> dict[str, float]:
-    """MAE, RMSE, and directional accuracy from regression predictions.
-
-    Directional accuracy: fraction of samples where the predicted close-return
-    sign matches the actual close-return sign (column index 3 = close_ret).
-    """
+    """MAE, RMSE, and directional accuracy from regression predictions."""
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
 
@@ -65,6 +63,31 @@ def regression_metrics(
     return out
 
 
+def kendall_per_timestamp(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    min_valid: int = 3,
+) -> np.ndarray:
+    """Kendall tau per row; NaN where insufficient finite pairs or zero variance."""
+    scores = np.asarray(scores, dtype=np.float64)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    out = np.full(scores.shape[0], np.nan, dtype=np.float64)
+    for i in range(scores.shape[0]):
+        s = scores[i]
+        y = y_true[i]
+        m = np.isfinite(s) & np.isfinite(y)
+        if int(m.sum()) < min_valid:
+            continue
+        ss, yy = s[m], y[m]
+        if np.nanstd(ss) < 1e-12 or np.nanstd(yy) < 1e-12:
+            continue
+        tau, _ = kendalltau(ss, yy)
+        if np.isfinite(tau):
+            out[i] = float(tau)
+    return out
+
+
 def spearman_per_timestamp(
     scores: np.ndarray,
     y_true: np.ndarray,
@@ -72,8 +95,6 @@ def spearman_per_timestamp(
     min_valid: int = 3,
 ) -> np.ndarray:
     """Spearman correlation per row; NaN where insufficient finite pairs."""
-    import pandas as pd
-
     scores = np.asarray(scores, dtype=np.float64)
     y_true = np.asarray(y_true, dtype=np.float64)
     out = np.full(scores.shape[0], np.nan, dtype=np.float64)
@@ -174,6 +195,34 @@ def masked_regression_metrics(
     mae = float(mean_absolute_error(yt, yp))
     rmse = float(np.sqrt(mean_squared_error(yt, yp)))
     return {"mae": mae, "rmse": rmse}
+
+
+def per_sector_metric_summary(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    symbols: tuple[str, ...],
+    sectors: np.ndarray,
+    *,
+    min_valid: int = 2,
+) -> dict[str, dict[str, float]]:
+    """Spearman summary per sector label."""
+    scores = np.asarray(scores, dtype=np.float64)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    out: dict[str, dict[str, float]] = {}
+    uniq = np.unique(sectors)
+    for sec in uniq:
+        idx = [i for i in range(len(symbols)) if sectors[i] == sec]
+        if len(idx) < 2:
+            continue
+        sub_s = scores[:, idx]
+        sub_y = y_true[:, idx]
+        mv = min(min_valid, len(idx))
+        rho = spearman_per_timestamp(sub_s, sub_y, min_valid=max(2, mv))
+        out[str(sec)] = {
+            "spearman_mean": float(np.nanmean(rho)),
+            "n_symbols": float(len(idx)),
+        }
+    return out
 
 
 def aggregate_fold_metrics(per_fold: list[dict[str, Any]]) -> dict[str, float]:
