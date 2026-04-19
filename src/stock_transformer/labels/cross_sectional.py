@@ -6,19 +6,7 @@ import numpy as np
 
 
 def raw_returns_forward(close: np.ndarray, *, eps: float = 1e-12) -> np.ndarray:
-    """Per-symbol forward simple return from row i to i+1.
-
-    Parameters
-    ----------
-    close
-        ``[n_rows, n_symbols]``, NaN where missing.
-
-    Returns
-    -------
-    r
-        ``[n_rows, n_symbols]`` with ``r[i,s] = close[i+1,s]/close[i,s] - 1``,
-        NaN where undefined or non-finite inputs.
-    """
+    """Per-symbol forward simple return from row i to i+1."""
     close = np.asarray(close, dtype=np.float64)
     n, s = close.shape
     out = np.full((n, s), np.nan, dtype=np.float64)
@@ -38,27 +26,58 @@ def cross_sectional_targets(
     raw: np.ndarray,
     *,
     mode: str = "cross_sectional_return",
+    sectors: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Demean raw forward returns across the live cross-section at each row.
-
-    ``mode``:
-      - ``cross_sectional_return`` — subtract nanmedian across symbols.
-      - ``raw_return`` — return ``raw`` unchanged.
-    """
+    """Demean raw forward returns per ``mode``."""
     raw = np.asarray(raw, dtype=np.float64)
     if mode == "raw_return":
         return raw.copy()
-    if mode != "cross_sectional_return":
-        raise ValueError(f"Unknown label mode: {mode}")
+    if mode == "cross_sectional_return":
+        return _demean_by_func(raw, lambda row, m: float(np.nanmedian(row[m])))
+    if mode == "equal_weighted_return":
+        return _demean_by_func(raw, lambda row, m: float(np.nanmean(row[m])))
+    if mode == "sector_neutral_return":
+        if sectors is None:
+            raise ValueError("sector_neutral_return requires sectors[S]")
+        return _sector_neutral_demean(raw, sectors)
+    raise ValueError(f"Unknown label mode: {mode}")
+
+
+def _demean_by_func(
+    raw: np.ndarray,
+    center_fn: callable,
+) -> np.ndarray:
     out = np.full_like(raw, np.nan, dtype=np.float64)
     for i in range(raw.shape[0]):
         row = raw[i]
-        if not np.any(np.isfinite(row)):
+        m = np.isfinite(row)
+        if not np.any(m):
             continue
-        m = np.nanmedian(row)
-        if not np.isfinite(m):
+        c = center_fn(row, m)
+        if not np.isfinite(c):
             continue
-        out[i] = row - m
+        out[i] = np.where(m, row - c, np.nan)
+    return out
+
+
+def _sector_neutral_demean(raw: np.ndarray, sectors: np.ndarray) -> np.ndarray:
+    out = np.full_like(raw, np.nan, dtype=np.float64)
+    n, s = raw.shape
+    if len(sectors) != s:
+        raise ValueError("sectors must have length n_symbols")
+    for i in range(n):
+        row = raw[i]
+        for j in range(s):
+            if not np.isfinite(row[j]):
+                continue
+            sec = sectors[j]
+            peer = np.isfinite(row) & (sectors == sec)
+            if not np.any(peer):
+                continue
+            med = float(np.nanmedian(row[peer]))
+            if not np.isfinite(med):
+                continue
+            out[i, j] = row[j] - med
     return out
 
 
@@ -67,10 +86,7 @@ def bucket_labels_by_quantile(
     *,
     q: float = 0.33,
 ) -> np.ndarray:
-    """Per-row top / middle / bottom bucket (0,1,2) from cross-sectional ``values``.
-
-    NaN entries stay NaN. Uses nan-friendly ranks; ties split arbitrarily.
-    """
+    """Per-row top / middle / bottom bucket (0,1,2) from cross-sectional ``values``."""
     values = np.asarray(values, dtype=np.float64)
     out = np.full_like(values, np.nan, dtype=np.float64)
     q = float(q)
@@ -87,7 +103,7 @@ def bucket_labels_by_quantile(
         order = np.argsort(x)
         ranks = np.empty_like(order)
         ranks[order] = np.arange(len(x))
-        bucket = np.full(x.shape[0],1.0)
+        bucket = np.full(x.shape[0], 1.0)
         bucket[ranks < k] = 2.0
         bucket[ranks >= len(x) - k] = 0.0
         br = np.full(n_s, np.nan)

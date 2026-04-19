@@ -241,32 +241,44 @@ later milestones are listed under "Planned additions" and in each milestone's
 
 ```
 src/stock_transformer/
-├── cli.py                     # stx-backtest entrypoint (single-symbol dispatch today)
+├── cli.py                     # stx-backtest (exit 2 on partial fold failure)
 ├── data/
-│   ├── alphavantage.py        # REST client + per-symbol fetch + universe batch
+│   ├── alphavantage.py        # REST + optional MCP unwrap + partitioned store
 │   ├── canonicalize.py        # AV payload → canonical OHLCV schema
-│   ├── cache_paths.py         # raw + canonical cache paths
+│   ├── mcp_canonicalize.py    # unwrap MCP-wrapped AV JSON
+│   ├── store.py               # CandleStore csv|parquet under canonical/
+│   ├── cache_paths.py         # raw + legacy canonical cache paths
 │   ├── align.py               # outer-join global timestamp alignment
-│   ├── universe.py            # UniverseConfig, membership table
+│   ├── universe.py          # UniverseConfig, sector map, membership table
 │   └── synthetic.py           # seedable fake candles for tests and CI
 ├── features/
 │   ├── sequences.py           # single-symbol multi-timeframe token builder
-│   └── universe_tensor.py     # [N, L, S, F] samples + masks
+│   ├── universe_tensor.py     # [N, L, S, F] samples + masks + feature_schema
+│   ├── cross_sectional.py     # optional CS numeric planes for the tensor
+│   ├── scaling.py             # TrainOnlyScaler (train-fold fit)
+│   └── tabular.py             # flatten_universe_sample for baselines
 ├── labels/
-│   └── cross_sectional.py     # raw/relative forward returns, bucket labels
+│   └── cross_sectional.py     # raw / CS / EW / sector-neutral targets
 ├── model/
 │   ├── transformer_classifier.py  # single-symbol CandleTransformer (reference)
 │   ├── transformer_ranker.py      # temporal + cross-sectional attention
-│   └── baselines.py               # equal score, momentum rank
+│   ├── baselines.py               # equal, momentum, mean-reversion ranks
+│   ├── baselines_tabular.py       # ridge + hist GBDT on flat windows
+│   └── losses.py                  # mse, listnet, approx_ndcg
 └── backtest/
     ├── walkforward.py         # fold generation + chronology checks
-    ├── metrics.py             # regression + ranking metrics, aggregation
+    ├── metrics.py             # regression + ranking metrics, per-sector
     ├── runner.py              # single-symbol experiment
     └── universe_runner.py     # universe experiment (primary)
 configs/
 ├── default.yaml               # single-symbol reference
-└── universe.yaml              # multi-ticker universe (primary)
+├── universe.yaml              # multi-ticker universe (primary)
+└── sector_map.yaml            # static sector tags (M9b)
+scripts/
+└── sweep_loss.py              # optional multi-loss summary (M10)
 tests/
+├── golden/predictions_universe.csv
+├── fixtures/av_raw/           # MCP parity JSON
 ├── test_sequences.py
 ├── test_multitimeframe.py
 ├── test_walkforward.py
@@ -274,7 +286,19 @@ tests/
 ├── test_runner_synthetic.py
 ├── test_cross_sectional_labels.py
 ├── test_universe_tensor.py
-└── test_universe_runner_synthetic.py
+├── test_universe_runner_synthetic.py
+├── test_baselines_tabular.py
+├── test_leakage_universe.py
+├── test_predictions_schema.py
+├── test_cli_dispatch.py
+├── test_run_artifacts.py
+├── test_candle_store.py
+├── test_membership_richer.py
+├── test_feature_schema_hash.py
+├── test_sector_neutral_labels.py
+├── test_summary_per_sector.py
+├── test_ranking_losses.py
+└── test_mcp_rest_parity.py
 ```
 
 **Planned additions by milestone** (each milestone below is authoritative):
@@ -288,7 +312,7 @@ tests/
 | M9a | `src/stock_transformer/features/cross_sectional.py`, `src/stock_transformer/features/scaling.py`, `tests/test_feature_schema_hash.py` |
 | M9b | `configs/sector_map.yaml`, `tests/test_sector_neutral_labels.py`, `tests/test_summary_per_sector.py` |
 | M10 | `src/stock_transformer/model/losses.py`, `scripts/sweep_loss.py`, `tests/test_ranking_losses.py` |
-| M12 | MCP client module + `tests/test_mcp_rest_parity.py`, `tests/fixtures/av_raw/*.json` |
+| M12 | `src/stock_transformer/data/mcp_canonicalize.py` + `tests/test_mcp_rest_parity.py`, `tests/fixtures/av_raw/*.json` |
 
 ## Alpha Vantage data plan
 
@@ -650,7 +674,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M6b — Tabular baselines.**
+- [x] **M6b — Tabular baselines.**
   - **Files:**
     - `features/tabular.py` (new):
       ```python
@@ -678,8 +702,10 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
       ```
     - `model/baselines.py` (edit): add `mean_reversion_rank_scores(close, end_rows, lookback)`.
     - `backtest/universe_runner.py` (edit): call new baselines per fold.
-    - `pyproject.toml` (edit): bump `scikit-learn>=1.4`, add `lightgbm>=4.3`,
+    - `pyproject.toml` (edit): bump `scikit-learn>=1.4`,
       bump `numpy>=1.26`, `pandas>=2.2`, `torch>=2.2`, `requires-python=">=3.11"`.
+      *(GBT baseline uses `sklearn.ensemble.HistGradientBoostingRegressor` for portability;
+      native LightGBM was dropped after segfaults on Python 3.13 / macOS.)*
   - **Config keys:** none new (baselines always run).
   - **Tests:** `tests/test_baselines_tabular.py`
     - `test_flatten_round_trip_shape`: `X_flat.shape[0] == (~mask[:,-1,:] & isfinite(y)).sum()`.
@@ -696,7 +722,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M7a — Leakage test matrix.**
+- [x] **M7a — Leakage test matrix.**
   - **Files:** `tests/test_leakage_universe.py` — the full matrix from
     [§Leakage test matrix](#leakage-test-matrix), using the shared fixture.
   - **Config keys:** none.
@@ -709,7 +735,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M7b — Predictions long schema + run artifacts.**
+- [x] **M7b — Predictions long schema + run artifacts.**
   - **Files:**
     - `backtest/universe_runner.py` (edit): emit long-format
       `predictions_universe.csv` as specified in
@@ -739,7 +765,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M8 — Partitioned parquet store + richer membership.**
+- [x] **M8 — Partitioned parquet store + richer membership.**
   - **Files:**
     - `data/store.py` (new): `CandleStore(backend: Literal["csv","parquet"])`
       with `.write(symbol, timeframe, df)` and `.read(symbol, timeframe) -> df`.
@@ -758,10 +784,10 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M9a — Cross-sectional features + train-only scaler.**
+- [x] **M9a — Cross-sectional features + train-only scaler.**
   - **Files:**
-    - `features/cross_sectional.py` (new): `percentile_rank`, `zscore`,
-      `relative_strength`, `relative_volume` — each `(panel, symbols) -> np.ndarray[n_rows, n_symbols]`.
+    - `features/cross_sectional.py` (new): `percentile_rank`, `zscore_cross_section`,
+      `relative_strength_vs_ew`, `relative_volume_vs_median`, plus trailing-return / vol helpers.
     - `features/universe_tensor.py` (edit): `build_universe_samples` accepts
       `features: list[str]` and composes the feature stack accordingly;
       `N_UNIVERSE_FEATURES` becomes a derived constant `len(features)`.
@@ -784,7 +810,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M9b — Sector-neutral labels + sector map.**
+- [x] **M9b — Sector-neutral labels + sector map.**
   - **Files:**
     - `configs/sector_map.yaml` (new):
       ```yaml
@@ -799,8 +825,8 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
     - `labels/cross_sectional.py` (edit): extend `cross_sectional_targets` with
       `"equal_weighted_return"` (nanmean) and `"sector_neutral_return"`
       (nanmedian within-sector, requires `sectors: np.ndarray[S]`).
-    - `data/universe.py` (edit): `load_sector_map(path) -> dict[str, str]`,
-      `sectors_for_symbols(symbols, sector_map) -> np.ndarray[S]`.
+    - `data/universe.py` (edit): `load_sector_map(path) -> tuple[dict[str, str], str]`,
+      `sectors_for_symbols(symbols, sector_map, default_sector) -> np.ndarray[S]`.
     - `backtest/universe_runner.py` (edit): build per-sector breakdowns in summary.
   - **Config keys:** `label_mode` admits two more values; `sector_map_path`.
   - **Tests:** `tests/test_sector_neutral_labels.py` — synthetic 2-sector panel
@@ -813,7 +839,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M10 — Ranking loss ablation.**
+- [x] **M10 — Ranking loss ablation.**
   - **Files:**
     - `model/losses.py` (new):
       ```python
@@ -851,7 +877,7 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M12 — (Optional) MCP AlphaVantage path.**
+- [x] **M12 — (Optional) MCP AlphaVantage path.**
   - Parallel branch for schema discovery via `TOOL_LIST` / `TOOL_GET` / `TOOL_CALL`.
   - **Parity test scope (`tests/test_mcp_rest_parity.py`):** the parity target
     is the **canonicalizer**, not the upstream data. The test feeds a single
@@ -861,7 +887,8 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
     are byte-identical (same dtypes, same row order, same `timestamp` values).
     It does **not** make live calls to either path.
   - Gated behind `data_source: rest|mcp` in YAML; default remains `"rest"`.
-  - No MCP code before M11 is otherwise complete.
+  - **Shipped:** `data/mcp_canonicalize.py::unwrap_mcp_alphavantage_payload`, `data_source: mcp`
+    unwrap in `fetch_candles_for_timeframe`, and `tests/fixtures/av_raw/` + `tests/test_mcp_rest_parity.py`.
 
 ## Pilot: small-universe drill-down for `MSTR`
 

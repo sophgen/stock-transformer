@@ -32,6 +32,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     summary = run_from_config_path(args.config, synthetic=args.synthetic)
     print("Run complete. Artifacts:", summary.get("run_dir"))
+    if summary.get("fold_errors"):
+        return 2
+    if summary.get("error") in ("partial_failure", "no_folds"):
+        return 2
     return 0
 
 
