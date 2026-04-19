@@ -1,8 +1,9 @@
 """``stx`` command-line interface (Click).
 
-The package splits parsing (:mod:`stock_transformer.cli.app`), presentation
-(:mod:`stock_transformer.cli.output`), and runner orchestration
-(:mod:`stock_transformer.cli.services`) so training code stays free of CLI imports.
+The package splits parsing (:mod:`stock_transformer.cli.app` and
+:mod:`stock_transformer.cli.commands`), presentation (:mod:`stock_transformer.cli.output`),
+and runner orchestration (:mod:`stock_transformer.cli.services`) so training code stays
+free of CLI imports.
 
 Symbols re-exported from :mod:`stock_transformer.backtest.runner` (and related modules) exist so
 tests and scripts can ``patch("stock_transformer.cli.run_experiment", ...)`` without reaching into

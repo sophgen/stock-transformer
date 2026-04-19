@@ -385,14 +385,14 @@ def test_cache_dir_callback_rejects_whitespace_only_path():
 
 
 def test_fetch_normalizes_symbols_to_uppercase(monkeypatch):
-    import stock_transformer.cli.app as app_mod
+    import stock_transformer.cli.commands.fetch as fetch_cmd_mod
 
     seen: list[list[str]] = []
 
     def capture(cache_dir, symbols, *, refresh):
         seen.append(list(symbols))
 
-    monkeypatch.setattr(app_mod, "run_fetch", capture)
+    monkeypatch.setattr(fetch_cmd_mod, "run_fetch", capture)
     runner = CliRunner()
     r = runner.invoke(cli, ["fetch", "--symbols", "mstr"], catch_exceptions=False)
     assert r.exit_code == 0

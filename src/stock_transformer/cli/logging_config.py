@@ -2,7 +2,8 @@
 
 Library code under ``stock_transformer`` should use ``logging.getLogger(__name__)``; this module
 configures the root handler so global ``-v`` / ``-q`` and optional ``STX_LOG_LEVEL`` behave
-consistently for the CLI without importing Click in training code.
+consistently for the CLI without importing Click in training code. ISO-like timestamps make
+log lines sortable and grep-friendly in long backtests and CI artifacts.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def setup_logging(
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%dT%H:%M:%S",
         force=True,
         handlers=handlers,
     )

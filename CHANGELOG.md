@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CLI: `stock_transformer.cli.commands` package — one module per subcommand (`backtest`, `fetch`, `sweep`, `config`, `validate`, `version`) with shared `cli_exit` helper; root `app.py` only defines the group, globals, and `register_all_commands`.
+- CLI: SIGTERM handler exits with **143** (containers / process managers); ISO-like timestamps in default stderr log format.
 - CLI: `-o` as a short form of `--output-format` on `stx backtest` and `stx sweep`; `short_help` on root and `stx config` groups; `--cache-dir` validated as a non-empty path before fetch runs.
 - PyPI-oriented `keywords` and `classifiers` in `pyproject.toml`.
 - Docstrings clarifying config merge order in `prepare_backtest_config`, `run_from_config_path`, and `env_config`.

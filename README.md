@@ -143,6 +143,7 @@ Both take `-c/--config` (same default as `stx backtest`).
 | 1 | Invalid or missing config, validation error, or runtime error. |
 | 2 | Partial failure (e.g. fold errors) or no folds — inspect `summary.json`. |
 | 130 | Interrupted (Ctrl+C) after best-effort artifact write. |
+| 143 | SIGTERM (containers / process managers) — graceful exit without a traceback. |
 
 ## Configuration precedence
 
@@ -272,12 +273,14 @@ The `stx` command is implemented under `src/stock_transformer/cli/` so parsing, 
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli/app.py` | Click group, subcommands, validation messages, exit codes. |
+| `cli/app.py` | Root Click group, global options, `register_all_commands`, `main` / `main_backtest_compat`. |
+| `cli/commands/` | One module per subcommand group (`backtest`, `fetch`, `sweep`, `config`, `validate`, `version`) — options and thin handlers only. |
 | `cli/services.py` | Calls runners via the `stock_transformer.cli` package so tests can patch `run_experiment` and friends. |
 | `cli/output.py` | Text/JSON summaries, sweep tables, version string. |
 | `cli/logging_config.py` | Root logging for `-v` / `-q` / `--log-file`. |
 | `cli/progress_display.py` | Optional Rich stderr lines (`ProgressCallback`). |
 | `cli/validators.py` | Click callbacks (e.g. non-empty `--device`). |
+| `cli/sigint.py` | SIGINT / SIGTERM handlers (exit 130 / 143 without tracebacks). |
 
 Core walk-forward logic remains in `backtest/` and must not import the CLI.
 

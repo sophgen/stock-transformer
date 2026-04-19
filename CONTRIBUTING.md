@@ -34,11 +34,12 @@ without editing YAML.
 | 1 | Bad or missing config, validation error, or other CLI/runtime error |
 | 2 | Partial experiment failure (e.g. fold errors) or `no_folds` — inspect `summary.json` |
 | 130 | SIGINT / Ctrl+C after best-effort cleanup |
+| 143 | SIGTERM (e.g. container stop) — same cleanup path as Ctrl+C, POSIX-style exit code |
 
 ## Architecture (high level)
 
 ```text
-stx (cli package)  →  services (orchestration)  →  prepare_backtest_config → run_experiment | run_universe_experiment
+stx (cli.app + cli.commands)  →  services (orchestration)  →  prepare_backtest_config → run_experiment | run_universe_experiment
         │                      │
         │                      └── fetch / sweep / validate
         └── output, logging, progress (no training imports)
@@ -52,7 +53,7 @@ stx (cli package)  →  services (orchestration)  →  prepare_backtest_config �
 
 ### Layering rules
 
-- **`stock_transformer/cli/`** parses arguments, configures logging, formats stdout/stderr, and translates validation errors into user-facing text. It must not implement tensor math or walk-forward logic.
+- **`stock_transformer/cli/`** parses arguments (`app.py` + `commands/`), configures logging, formats stdout/stderr, and translates validation errors into user-facing text. It must not implement tensor math or walk-forward logic.
 - **`stock_transformer/backtest/`** orchestrates data, folds, training, and metrics; optional `ProgressCallback` (`backtest/progress.py`) lets the CLI print fold/epoch lines without importing Click inside the training loop.
 - **`stock_transformer/model/`** holds `nn.Module` implementations; device resolution lives in `device.py`.
 
@@ -60,12 +61,14 @@ Library callers can use `prepare_backtest_config` plus `run_experiment` / `run_u
 
 **Why `cli/services.py` imports `stock_transformer.cli` at runtime:** integration tests patch `stock_transformer.cli.run_experiment` (and similar names). Resolving runners through the public CLI package keeps those patches aligned with user-facing behavior.
 
+**Why patch targets in tests use the defining module:** command modules bind names like `run_fetch` at import time; monkeypatch `stock_transformer.cli.commands.fetch.run_fetch` (the use site), not only `cli.services.run_fetch`, so the replacement is visible to the command handler.
+
 ## Coding conventions
 
 - **Ruff** for lint + format; **mypy** with `disallow_untyped_defs` on `src/stock_transformer`.
 - Prefer **`logging`** in library modules; the CLI prints short summaries and tables.
 - **Click:** short and long flags (`-c`/`--config`, `-o`/`--output-format` on `backtest` and `sweep`), sensible defaults, `BadParameter` for fixable input mistakes before heavy work.
-- **Signals:** long commands install a SIGINT handler that raises `KeyboardInterrupt` so we exit with **130** without dumping a traceback.
+- **Signals:** long commands install handlers for SIGINT (`KeyboardInterrupt` → **130**) and SIGTERM (`SystemExit(143)`), so users and orchestrators get clean exits without tracebacks.
 - Avoid bare `except` without a comment; if you must catch broadly, state why (e.g. fold isolation).
 
 ## Adding a model or loss

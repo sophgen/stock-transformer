@@ -1,6 +1,7 @@
 """Stdout/stderr presentation for CLI commands (no training or I/O to disk artifacts).
 
-Keeping formatting here lets tests assert on pure functions and keeps Click handlers thin.
+Keeping formatting here lets tests assert on pure functions, keeps Click handlers thin, and
+avoids importing torch or runners when only formatting or exit-code mapping is needed.
 """
 
 from __future__ import annotations
@@ -19,7 +20,11 @@ from stock_transformer import __version__
 
 
 def version_string() -> str:
-    """Human-readable build string for ``--version`` (torch and resolved auto device)."""
+    """Human-readable build string for ``--version``.
+
+    Includes torch and the resolved ``auto`` device so support tickets show runtime context
+    without a separate ``python -c`` step.
+    """
     import torch
 
     from stock_transformer.device import resolve_device
@@ -45,7 +50,11 @@ def style_text(text: str, *, fg: str, ctx: click.Context | None) -> str:
 
 
 def summary_exit_code(summary: dict[str, Any]) -> int:
-    """Map runner summary dicts to process exit codes (see README exit-code table)."""
+    """Map runner summary dicts to process exit codes (see README exit-code table).
+
+    Uses code 2 for partial failure so CI and scripts can distinguish “finished with issues”
+    from hard validation errors (code 1) while still emitting ``summary.json`` when possible.
+    """
     if summary.get("fold_errors"):
         return 2
     err = summary.get("error")
@@ -60,7 +69,10 @@ def emit_backtest_result(
     output_format: str,
     ctx: click.Context | None,
 ) -> None:
-    """Print JSON or text summary and terminate with the code implied by ``summary``."""
+    """Print JSON or text summary and terminate with the code implied by ``summary``.
+
+    Raises ``SystemExit`` so Click does not print a second success line after a non-zero run.
+    """
     code = summary_exit_code(summary)
     if output_format == "json":
         click.echo(json.dumps(summary, indent=2, default=str))
