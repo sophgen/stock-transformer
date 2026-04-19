@@ -19,14 +19,31 @@
   monthly`. The `timeframe` field in YAML accepts any of these; it maps to
   Alpha Vantage endpoints via the table in [§Alpha Vantage data plan](#alpha-vantage-data-plan).
 - **Data source:** Alpha Vantage REST + on-disk cache. MCP discovery is **out
-  of scope until M11** (see [§Milestone tracker](#milestone-tracker)).
+  of scope until M12** (see [§Milestone tracker](#milestone-tracker)).
 - **System design constraint:** the full modeling pipeline is **multi-ticker
   end-to-end**. Inputs, labels, splits, normalization, and metrics are defined
   over the whole universe at each timestamp.
 - **End-state:** train on multiple tickers (shared history, aligned timestamps,
-  proper masking) and use the model to score or rank performance — including
-  the pilot case of a small "predictor" basket informing `MSTR` direction
-  (see [§Pilot](#pilot-multi-ticker-inputs-for-mstr-direction)).
+  proper masking) and use the model to score or rank the whole cross-section.
+  The pilot basket (`MSTR` + predictors) is a small-universe **drill-down** of
+  the same ranker — not a separate direction classifier
+  (see [§Pilot](#pilot-small-universe-drill-down-for-mstr)).
+
+## Glossary
+
+Shared vocabulary. Any new module should use these terms exactly.
+
+| Term | Meaning |
+|---|---|
+| **Panel** | Outer-joined OHLCV dataframe across the universe on a single global timestamp index per timeframe. Columns are `timestamp` + `{field}__{symbol}`. |
+| **Row / bar** | One aligned timestamp on the panel. |
+| **Sample** | One training example anchored at prediction timestamp `t`: a lookback window `[t-L+1 … t]` across the full universe. |
+| **Fold** | A contiguous `(train, val, test)` slice of the *sample index* produced by `WalkForwardConfig`. |
+| **Live** (at `t`, for `s`) | `isfinite(raw_return[t, s])` — i.e. both `close[t, s]` and `close[t+1, s]` are finite. |
+| **Coverage** (at `t`) | `sum_s live(t, s)`. A row is kept iff coverage ≥ `min_coverage_symbols`. |
+| **Canonical candle** | One OHLCV row in the uniform schema `timestamp, symbol, timeframe, open, high, low, close, volume`, regardless of whether it came from REST or MCP. |
+| **Feature schema hash** | `sha256(json.dumps(feature_names, sort_keys=True))[:16]`; changes invalidate cached tensors and is stamped in `feature_schema.json`. |
+| **Target symbol** | YAML `target_symbol`: a *reporting key* for per-symbol drill-downs; does **not** gate training or coverage. |
 
 ## Conventions
 
@@ -52,16 +69,59 @@ Pin these once; every module honours them.
   forward return (i.e. both `t` and `t+1` must be finite for that symbol).
   `target_symbol` is **not** required to be live — it is a reporting key only;
   its metrics will be NaN on rows where MSTR is masked.
-- **Tensor shapes:**
+- **Tensor shapes and dtypes:**
   - Feature block per sample: `X[n] ∈ [L, S, F]` (L = lookback, S = #symbols).
   - Batched: `X ∈ [N, L, S, F]`, `mask ∈ [N, L, S]`, `y ∈ [N, S]`.
+  - `X`: `float32`. `mask`: `bool` (True = padded/invalid). `y`: `float32`,
+    NaN where label undefined. `raw_ret`: `float32`. `end_row`: `int64`.
   - F is tracked by `N_UNIVERSE_FEATURES` in `features/universe_tensor.py`;
-    will grow when cross-sectional features land (M9) — record `feature_schema_hash`.
+    will grow when cross-sectional features land (M9a) — record
+    `feature_schema_hash` in `feature_schema.json` (see M7b).
 - **Deterministic ordering & seeding:** every training run calls
   `torch.manual_seed(cfg.seed)` and `np.random.seed(cfg.seed)`; DataLoaders use
   `torch.Generator` seeded from the same value.
 - **Device:** `device: "auto"` prefers MPS on Apple Silicon, else CUDA, else
   CPU. Ops unsupported on MPS fall back to CPU with a single-line warning.
+
+## Config reference
+
+Authoritative list of YAML keys consumed by `configs/universe.yaml` (primary)
+and `configs/default.yaml` (single-symbol reference). New keys introduced by a
+future milestone are tagged with the milestone id.
+
+### Universe config (`configs/universe.yaml`)
+
+| Key | Type | Default | Intro | Description |
+|---|---|---|---|---|
+| `experiment_mode` | `"universe" \| "single_symbol"` | `"single_symbol"` | M5 | Dispatch in CLI. Missing → single-symbol. |
+| `symbols` | `list[str]` | — | M1 | Ordered, uppercased at load; fixes symbol axis for the run. |
+| `target_symbol` | `str` | first of `symbols` | M1 | Reporting-only drill-down key; does **not** drive training. |
+| `timeframe` | `"1min"\|"5min"\|"15min"\|"30min"\|"60min"\|"daily"\|"weekly"\|"monthly"` | `"daily"` | M2 | Maps to AV endpoint per [§Alpha Vantage data plan](#alpha-vantage-data-plan). |
+| `lookback` | `int >= 2` | `32` | M3 | L in `[L, S, F]`. |
+| `min_coverage_symbols` | `int` | `max(2, len(symbols)-1)` | M3 | Drop `t` where `sum_s live(t, s) < this`. |
+| `label_mode` | `"cross_sectional_return"\|"raw_return"\|"equal_weighted_return"\|"sector_neutral_return"` | `"cross_sectional_return"` | M4 / M9b | Last two land in M9b. |
+| `use_adjusted_daily` / `use_adjusted_weekly` / `use_adjusted_monthly` | `bool` | `true` | M2 | Select AV adjusted endpoint. |
+| `intraday_month` | `str \| null` | `null` | M2 | AV `month=YYYY-MM` slice for intraday. |
+| `intraday_extended_hours` | `bool` | `false` | M2 | Include pre/post-market bars. |
+| `intraday_outputsize` | `"compact"\|"full"` | `"full"` | M2 | AV outputsize. |
+| `daily_outputsize` | `"compact"\|"full"` | `"full"` | M2 | AV outputsize. |
+| `cache_dir` | `str` | `"data"` | M2 | Root for raw + canonical caches. |
+| `store` | `"csv"\|"parquet"` | `"csv"` | M8 | Canonical storage backend. |
+| `data_source` | `"rest"\|"mcp"` | `"rest"` | M12 | Gate MCP path without breaking REST. |
+| `train_bars` / `val_bars` / `test_bars` / `step_bars` | `int` | — | M5 | `WalkForwardConfig` over the sample index. |
+| `d_model` / `nhead` / `num_temporal_layers` / `num_cross_layers` / `dim_feedforward` / `dropout` | numeric | — | M5 | `TransformerRanker` hyperparameters. |
+| `epochs` / `batch_size` / `learning_rate` | numeric | — | M5 | Optimiser. |
+| `loss` | `"mse"\|"listnet"\|"approx_ndcg"` | `"mse"` | M10 | Training loss ablation. |
+| `features` | `list[str]` | implicit v1 list | M9a | Explicit feature enumeration; bumps `feature_schema_hash`. |
+| `sector_map_path` | `str` | `"configs/sector_map.yaml"` | M9b | Required when `label_mode == "sector_neutral_return"`. |
+| `device` | `"auto"\|"cpu"\|"cuda"\|"mps"` | `"auto"` | M5 | Resolved by `resolve_device`. |
+| `seed` | `int` | `42` | M5 | Seeds torch, numpy, DataLoaders. |
+| `artifacts_dir` | `str` | `"artifacts"` | M5 | Root for per-run artifact directory. |
+| `save_models` | `bool` | `false` | M5 | When true, write `model_state_fold_<id>.pt`. |
+| `synthetic_n_bars` | `int` | `600` | M5 | Length of the synthetic panel under `--synthetic`. |
+
+Unknown keys are tolerated but logged at load time (`configs/validate.py` is
+future work; out of scope for M7).
 
 ## Objective definition
 
@@ -257,8 +317,8 @@ flowchart LR
   representation at `t`.
 - Symbol masks ensure absent tickers do not contaminate attention or loss.
 - **v1 loss:** masked MSE on the cross-sectional target (`label_mode` selects
-  the target variant). Listwise / pairwise ranking losses are an explicit
-  ablation in M10 under `loss: mse|listwise`.
+  the target variant). Ranking losses are an explicit ablation in M10 under
+  `loss: mse|listnet|approx_ndcg`.
 - Ablation ladder (kept for comparability):
   - Temporal-only per symbol (single-asset head).
   - Temporal + ticker embedding.
@@ -268,10 +328,12 @@ flowchart LR
 
 - **Equal-score** — no relative edge (implemented: `model/baselines.py::equal_score_baseline`).
 - **Momentum rank** — rank by recent trailing return (implemented: `momentum_rank_scores`).
-- **Mean-reversion rank** — rank by negative trailing return (M6b).
-- **Linear cross-sectional** — OLS / ridge on engineered cross-sectional features (M6b).
-- **Gradient-boosted tree ranker** — flat tabular baseline on per-ticker +
-  cross-sectional features (M6b).
+- **Mean-reversion rank** — rank by negative trailing return
+  (M6b, `model/baselines.py::mean_reversion_rank_scores`).
+- **Linear cross-sectional** — ridge on flattened tabular features
+  (M6b, `model/baselines_tabular.py::fit_linear_cs_ranker`).
+- **Gradient-boosted tree ranker** — LightGBM on flattened tabular features
+  (M6b, `model/baselines_tabular.py::fit_gbt_ranker`).
 
 ## Evaluation outputs (forecasting only)
 
@@ -291,11 +353,24 @@ flowchart LR
   - Per-timeframe.
   - Per-fold.
   - By market regime (future).
-- **Predictions table (`predictions_universe.csv`), long format:**
+- **Predictions table (`predictions_universe.csv`), long format** (M7b):
   columns `timestamp, symbol, timeframe, y_true_raw_return,
   y_true_relative_return, y_score, y_rank_pred, y_rank_true, fold_id`.
-  *(The current runner writes a wide variant; M7 includes a migration to the
-  long schema with a regression test comparing both layouts.)*
+  Ranks are computed per `(fold_id, timestamp)` over the finite subset of
+  `y_score` (resp. `y_true_*`) using `scipy.stats.rankdata(method="average")`,
+  **descending** (higher value → rank `1`). NaN score/truth → NaN rank.
+
+  Example (3 symbols, 1 timestamp, fold 0):
+
+  ```csv
+  timestamp,symbol,timeframe,y_true_raw_return,y_true_relative_return,y_score,y_rank_pred,y_rank_true,fold_id
+  2024-01-02,MSTR,daily,0.021,0.008,0.014,1,1,0
+  2024-01-02,IBIT,daily,0.013,0.000,0.009,2,2,0
+  2024-01-02,COIN,daily,-0.011,-0.024,-0.006,3,3,0
+  ```
+
+  *(The current runner writes a wide variant; M7b migrates to this long schema
+  and keeps a golden-file test comparing against a frozen fixture.)*
 
 ## Guardrails and tests
 
@@ -312,8 +387,23 @@ flowchart LR
 
 ### Leakage test matrix
 
-All live in `tests/test_leakage_universe.py` (M7). Each test uses synthetic
-data and seeds from `configs/universe.yaml` so no network calls are needed.
+All live in `tests/test_leakage_universe.py` (M7a). Each test uses synthetic
+data from `data.synthetic.synthetic_universe_candles` so no network calls are
+needed.
+
+**Shared fixture** (pytest fixture `universe_panel`):
+
+```python
+symbols = ("MSTR", "IBIT", "COIN", "QQQ")
+candles = synthetic_universe_candles(
+    n_bars=400, symbols=symbols, timeframe="daily", seed=7,
+)
+panel, close = align_universe_ohlcv(candles, symbols)
+```
+
+For `test_pit_universe_membership`, `IBIT` is additionally masked to be
+absent for rows `[0, 100)` by setting its OHLCV to NaN on those rows before
+alignment.
 
 | Test | Assertion |
 |---|---|
@@ -323,29 +413,38 @@ data and seeds from `configs/universe.yaml` so no network calls are needed.
 | `test_pit_universe_membership` | Symbol listed only from `t=100`; all samples with `t<100` have `mask[:, :, sym] == True`. |
 | `test_coverage_drop` | Force `live.sum() < min_coverage_symbols` for a row; that row is absent from samples. |
 | `test_deterministic_symbol_order` | Shuffle YAML `symbols`; after re-sorting outputs, results identical. |
-| `test_train_scaling_fit_on_train_only` | (M9) Scaler statistics depend only on the train slice. |
+| `test_train_scaling_fit_on_train_only` | (M9a) Scaler statistics depend only on the train slice. Skipped in M7a, unskipped when M9a lands. |
 | `test_target_symbol_not_required_live` | Row where only MSTR is masked survives; MSTR metrics are NaN, peers are finite. |
 
 ## CLI contract
 
 - Entrypoint: `stx-backtest [-c CONFIG] [--synthetic]`.
-- Dispatch by `experiment_mode` in YAML:
+- Dispatch by `experiment_mode` in YAML (landing in M7b — today's CLI always
+  calls the single-symbol runner):
   - `"single_symbol"` (or absent) → `backtest/runner.py::run_from_config_path`.
   - `"universe"` → `backtest/universe_runner.py::run_universe_from_config_path`.
-- Exit code `0` on success, `1` on missing config, `2` on a failing fold.
-  `summary.json` is always written, even on partial failure.
+- Exit codes (final target, M7b):
+  - `0` — success.
+  - `1` — missing / unreadable config.
+  - `2` — at least one fold raised; `summary.json["error"]` is populated and
+    partial results for completed folds are still written.
+- `summary.json` is always written, even on partial failure.
 - `--synthetic` forces the synthetic data path for both modes (CI / smoke test).
+- On success, the CLI prints exactly one line to stdout:
+  `Run complete. Artifacts: <run_dir>` (machine-parseable by downstream jobs).
 
 ## Runtime baseline
 
-- Python ≥ 3.11.
-- PyTorch ≥ 2.2, numpy ≥ 1.26, pandas ≥ 2.2, pyyaml ≥ 6.
+- Python ≥ 3.11 *(target; `pyproject.toml` currently pins `>=3.10`. M6b bumps it.)*
+- PyTorch ≥ 2.2, numpy ≥ 1.26, pandas ≥ 2.2, pyyaml ≥ 6 *(target; M6b bumps pins
+  in `pyproject.toml` from the current 2.0 / 1.24 / 2.0 / 6.0).*
 - M6b adds scikit-learn ≥ 1.4 and lightgbm ≥ 4.3 (pinned in `pyproject.toml`).
 - M8 adds pyarrow ≥ 15.
 - Apple Silicon: `device: "auto"` prefers MPS; ops unsupported on MPS fall
   back to CPU with a single-line warning at model build time.
 - **No network calls in tests.** Live Alpha Vantage requests are gated behind
-  `ALPHAVANTAGE_API_KEY` and a non-`--synthetic` config.
+  `ALPHAVANTAGE_API_KEY`; the client raises at construction time if the env
+  var is missing and the config is not `--synthetic`.
 
 ## Per-run artifacts
 
@@ -382,79 +481,229 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M6b — Tabular baselines.**
-  - Ship: `model/baselines_tabular.py::{fit_linear_cs_ranker, fit_gbt_ranker}`;
-    `features/tabular.py::flatten_universe_sample(X, mask) -> (N*S, F_flat)`.
-  - Pin deps: scikit-learn ≥ 1.4, lightgbm ≥ 4.3 in `pyproject.toml`.
-  - Wire into `universe_runner.py` as `baseline_linear_spearman_mean`,
-    `baseline_gbt_spearman_mean` in each fold row and in aggregates.
-  - DoD:
-    - `pytest tests/test_baselines_tabular.py -v` passes.
-    - `stx-backtest --synthetic -c configs/universe.yaml` prints and persists
-      both new baseline columns in `summary.json`.
+> **Template for each open milestone.** Every open milestone below uses this
+> shape so an agent can execute it without guessing:
+>
+> - **Files** — new / edited paths and module-level signatures.
+> - **Config keys** — YAML additions (see [§Config reference](#config-reference)).
+> - **Tests** — files + assertion summary.
+> - **Commands** — must succeed on a clean checkout.
+> - **Artifacts** — what changes under `artifacts/universe_run_*`.
+> - **Out of scope** — explicit non-goals.
 
-- [ ] **M7 — Leakage test matrix + predictions schema migration.**
-  - Ship: `tests/test_leakage_universe.py` with the full matrix in
-    [§Leakage test matrix](#leakage-test-matrix).
-  - Migrate `predictions_universe.csv` to the long schema from
-    [§Evaluation outputs](#evaluation-outputs-forecasting-only) and add a
-    golden-file test.
-  - DoD: `pytest -v` passes; `predictions_universe.csv` columns match the
-    documented schema; old wide columns removed.
+---
+
+- [ ] **M6b — Tabular baselines.**
+  - **Files:**
+    - `features/tabular.py` (new):
+      ```python
+      def flatten_universe_sample(
+          X: np.ndarray,          # [N, L, S, F]  float32
+          mask: np.ndarray,        # [N, L, S]    bool, True = padded
+          y: np.ndarray,           # [N, S]        float32, NaN = no label
+      ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+          """Return (X_flat, y_flat, group_ids, sym_ids).
+
+          One row per (n, s) where mask[n, -1, s] is False AND isfinite(y[n, s]).
+          X_flat.shape == (M, L*F); group_ids[m] == n; sym_ids[m] == s.
+          """
+      ```
+    - `model/baselines_tabular.py` (new):
+      ```python
+      def fit_linear_cs_ranker(
+          X_tr, y_tr, groups_tr, *, alpha: float = 1.0
+      ) -> "LinearCSRanker": ...
+
+      def fit_gbt_ranker(
+          X_tr, y_tr, groups_tr, *, params: dict | None = None
+      ) -> "GBTRanker": ...
+      # Both expose .predict(X) -> np.ndarray[M] used to rebuild [N, S] scores.
+      ```
+    - `model/baselines.py` (edit): add `mean_reversion_rank_scores(close, end_rows, lookback)`.
+    - `backtest/universe_runner.py` (edit): call new baselines per fold.
+    - `pyproject.toml` (edit): bump `scikit-learn>=1.4`, add `lightgbm>=4.3`,
+      bump `numpy>=1.26`, `pandas>=2.2`, `torch>=2.2`, `requires-python=">=3.11"`.
+  - **Config keys:** none new (baselines always run).
+  - **Tests:** `tests/test_baselines_tabular.py`
+    - `test_flatten_round_trip_shape`: `X_flat.shape[0] == (~mask[:,-1,:] & isfinite(y)).sum()`.
+    - `test_linear_ranker_beats_equal_on_synthetic`: Spearman > 0 on seeded toy data.
+    - `test_gbt_ranker_runs_on_synthetic`: no NaN in predictions; finite Spearman.
+    - `test_mean_reversion_baseline_is_negative_of_momentum` on a pure-momentum synthetic panel.
+  - **Commands:**
+    - `pytest tests/test_baselines_tabular.py -v`
+    - `stx-backtest --synthetic -c configs/universe.yaml`
+  - **Artifacts:** `summary.json` per-fold row gains
+    `baseline_linear_spearman_mean`, `baseline_gbt_spearman_mean`,
+    `baseline_mean_reversion_spearman_mean`; aggregates mirror these.
+  - **Out of scope:** ranking-specific losses (→ M10), cross-sectional features (→ M9a).
+
+---
+
+- [ ] **M7a — Leakage test matrix.**
+  - **Files:** `tests/test_leakage_universe.py` — the full matrix from
+    [§Leakage test matrix](#leakage-test-matrix), using the shared fixture.
+  - **Config keys:** none.
+  - **Tests:** all rows of the matrix are present, parametrised where natural
+    (one test function per row). Tests that depend on M9a (`test_train_scaling_fit_on_train_only`)
+    are marked `pytest.mark.skip(reason="awaits M9a")` with a TODO pointing at M9a.
+  - **Commands:** `pytest tests/test_leakage_universe.py -v`.
+  - **Artifacts:** none (test-only).
+  - **Out of scope:** schema migration (→ M7b).
+
+---
+
+- [ ] **M7b — Predictions long schema + run artifacts.**
+  - **Files:**
+    - `backtest/universe_runner.py` (edit): emit long-format
+      `predictions_universe.csv` as specified in
+      [§Evaluation outputs](#evaluation-outputs-forecasting-only); drop the
+      wide format; also emit `feature_schema.json` and `folds.json`.
+    - `features/universe_tensor.py` (edit): add
+      `feature_schema() -> dict` returning `{"features": [...], "n": N_UNIVERSE_FEATURES, "hash": <sha256>}`.
+    - `cli.py` (edit): dispatch on `experiment_mode`; exit `2` on fold exception
+      with partial `summary.json` still written; keep the one-line success print.
+  - **Config keys:** `save_models` (bool, default `false`).
+  - **Tests:**
+    - `tests/test_predictions_schema.py`: golden-file comparison against
+      `tests/golden/predictions_universe.csv`; round-trip ranks are inverse of
+      descending `rankdata(method="average")`.
+    - `tests/test_cli_dispatch.py`: `experiment_mode: "universe"` routes to
+      `universe_runner`; missing config → exit `1`; forced fold failure → exit `2`
+      with `summary.json` present.
+    - `tests/test_run_artifacts.py`: every run writes
+      `{config_snapshot.yaml, universe_membership.json, feature_schema.json, folds.json, summary.json, predictions_universe.csv}`.
+  - **Commands:**
+    - `pytest -v`
+    - `stx-backtest --synthetic -c configs/universe.yaml` (exit 0)
+  - **Artifacts:** `feature_schema.json` and `folds.json` added; predictions file is long-format.
+  - **Out of scope:** parquet store (→ M8).
+
+---
 
 - [ ] **M8 — Partitioned parquet store + richer membership.**
-  - Ship: `data/store.py` with a `CandleStore(store="csv"|"parquet")`
-    façade; parquet layout under `data/canonical/timeframe=<tf>/symbol=<sym>/`.
-  - Extend `membership_table_from_panel` to accept real listings/delistings
-    and emit `timestamp_start/end, active_flag, sector, market_cap_bucket`.
-  - DoD:
-    - Round-trip test: write parquet → read parquet → bitwise-equal panel.
-    - `stx-backtest -c configs/universe.yaml` works with `store: parquet`.
+  - **Files:**
+    - `data/store.py` (new): `CandleStore(backend: Literal["csv","parquet"])`
+      with `.write(symbol, timeframe, df)` and `.read(symbol, timeframe) -> df`.
+      Parquet layout: `data/canonical/timeframe=<tf>/symbol=<sym>/part-000.parquet`.
+    - `data/universe.py` (edit): extend `membership_table_from_panel` to accept
+      an optional `listings: dict[str, tuple[pd.Timestamp | None, pd.Timestamp | None]]`
+      and emit rows `timestamp_start, timestamp_end, symbol, active_flag, sector, market_cap_bucket`.
+    - `pyproject.toml`: add `pyarrow>=15`.
+  - **Config keys:** `store` (default `"csv"`).
+  - **Tests:** `tests/test_candle_store.py` — write→read round-trip bit-equal on
+    a synthetic candle df for both backends; `tests/test_membership_richer.py`.
+  - **Commands:** `pytest tests/test_candle_store.py tests/test_membership_richer.py -v`;
+    `stx-backtest -c configs/universe.yaml` with `store: parquet`.
+  - **Artifacts:** no change to artifact layout.
+  - **Out of scope:** sector features (→ M9).
 
-- [ ] **M9 — Cross-sectional features + sector-neutral labels.**
-  - Ship: `features/cross_sectional.py` (rank, z-score, relative strength,
-    relative volume); integrate into `universe_tensor.py` behind a
-    `features: [...]` config list. Bump `N_UNIVERSE_FEATURES` accordingly.
-  - Ship: `labels/cross_sectional.py` extended with `equal_weighted_return`
-    and `sector_neutral_return` modes (latter reads `configs/sector_map.yaml`,
-    a static `symbol → sector` mapping bundled with the repo for the pilot).
-  - Ship: `StandardScaler`-style fit on train cross-section only; applied at
-    inference.
-  - DoD:
-    - `test_train_scaling_fit_on_train_only` passes.
-    - `summary.json` contains `per_sector` block.
-    - `feature_schema_hash` changes when the feature list changes.
+---
+
+- [ ] **M9a — Cross-sectional features + train-only scaler.**
+  - **Files:**
+    - `features/cross_sectional.py` (new): `percentile_rank`, `zscore`,
+      `relative_strength`, `relative_volume` — each `(panel, symbols) -> np.ndarray[n_rows, n_symbols]`.
+    - `features/universe_tensor.py` (edit): `build_universe_samples` accepts
+      `features: list[str]` and composes the feature stack accordingly;
+      `N_UNIVERSE_FEATURES` becomes a derived constant `len(features)`.
+    - `features/scaling.py` (new):
+      ```python
+      class TrainOnlyScaler:
+          def fit(self, X: np.ndarray, mask: np.ndarray) -> "TrainOnlyScaler": ...
+          def transform(self, X: np.ndarray) -> np.ndarray: ...
+      # Statistics computed over (n, l, s) where ~mask; per-feature mean/std.
+      ```
+      Wired into `universe_runner.py` per fold — fit on train only, apply to val/test.
+  - **Config keys:** `features` (list of feature names; default is today's 5-feature list).
+  - **Tests:**
+    - Unit tests for each feature function (shape, NaN propagation).
+    - `tests/test_leakage_universe.py::test_train_scaling_fit_on_train_only` — unskip from M7a.
+    - `tests/test_feature_schema_hash.py`: swapping `features` order or content changes the hash.
+  - **Commands:** `pytest -v`; `stx-backtest --synthetic -c configs/universe.yaml`.
+  - **Artifacts:** `feature_schema.json` reflects new list + hash; `summary.json` unchanged.
+  - **Out of scope:** sector-neutral labels (→ M9b).
+
+---
+
+- [ ] **M9b — Sector-neutral labels + sector map.**
+  - **Files:**
+    - `configs/sector_map.yaml` (new):
+      ```yaml
+      version: 1
+      default_sector: "Unknown"
+      mapping:
+        MSTR: "Information Technology"
+        IBIT: "Crypto"
+        COIN: "Financials"
+        QQQ:  "Index"
+      ```
+    - `labels/cross_sectional.py` (edit): extend `cross_sectional_targets` with
+      `"equal_weighted_return"` (nanmean) and `"sector_neutral_return"`
+      (nanmedian within-sector, requires `sectors: np.ndarray[S]`).
+    - `data/universe.py` (edit): `load_sector_map(path) -> dict[str, str]`,
+      `sectors_for_symbols(symbols, sector_map) -> np.ndarray[S]`.
+    - `backtest/universe_runner.py` (edit): build per-sector breakdowns in summary.
+  - **Config keys:** `label_mode` admits two more values; `sector_map_path`.
+  - **Tests:** `tests/test_sector_neutral_labels.py` — synthetic 2-sector panel
+    where within-sector median demeaning zeros out the mean per sector-row.
+    `tests/test_summary_per_sector.py` — `summary.json["aggregate"]["per_sector"]` exists.
+  - **Commands:** `pytest -v`; `stx-backtest --synthetic -c configs/universe.yaml`
+    with `label_mode: sector_neutral_return`.
+  - **Artifacts:** `summary.json` gains `aggregate.per_sector` block.
+  - **Out of scope:** dynamic/time-varying sector membership (future).
+
+---
 
 - [ ] **M10 — Ranking loss ablation.**
-  - Ship: `model/losses.py::{masked_mse, listnet_loss, approx_ndcg_loss}` and
-    a `loss: mse|listnet|approx_ndcg` config switch in `universe_runner.py`.
-  - DoD: `stx-backtest --synthetic` runs for each `loss` value; aggregate
-    metrics reported side-by-side in `summary.json["by_loss"]`.
+  - **Files:**
+    - `model/losses.py` (new):
+      ```python
+      def masked_mse(pred: Tensor, target: Tensor) -> Tensor: ...
+      def listnet_loss(pred: Tensor, target: Tensor, *, mask: Tensor) -> Tensor: ...
+      def approx_ndcg_loss(pred: Tensor, target: Tensor, *, mask: Tensor, alpha: float = 10.0) -> Tensor: ...
+      ```
+      All operate on `pred/target: [N, S]` and a label mask
+      (`isfinite(target) & ~padded`). `listnet_loss` uses softmax over valid entries.
+    - `backtest/universe_runner.py` (edit): dispatch via `loss` config; move the
+      inline `_masked_mse` into `model/losses.py`.
+  - **Config keys:** `loss: mse|listnet|approx_ndcg` (default `"mse"`).
+  - **Tests:** `tests/test_ranking_losses.py` — gradient sanity; a perfect
+    ranker drives each loss to a known minimum on a small fixture.
+  - **Commands:** `pytest tests/test_ranking_losses.py -v`; three synthetic
+    runs, one per `loss`, and `summary.json["by_loss"]` aggregates both.
+  - **Artifacts:** `summary.json` gains top-level `by_loss` when multiple losses
+    are run via a dedicated sweep script (`scripts/sweep_loss.py`, also new).
+  - **Out of scope:** portfolio simulation (→ M11).
+
+---
 
 - [ ] **M11 — (Future) Portfolio construction + trading simulation.**
-  - Only begin after ranking quality is demonstrably above baselines on at
-    least two walk-forward horizons.
+  - Gated on M9a/M9b+M10 producing ranking quality demonstrably above baselines
+    on ≥ 2 walk-forward horizons.
   - Scope: top-k long-only and long/short books; transaction-cost stub;
-    turnover reporting.
+    turnover reporting. No code to be written before gate is met.
+
+---
 
 - [ ] **M12 — (Optional) MCP AlphaVantage path.**
   - Parallel branch for schema discovery via `TOOL_LIST` / `TOOL_GET` / `TOOL_CALL`.
-  - Canonical candle schema must be identical to the REST path.
-  - Gated behind `data_source: rest|mcp` in YAML.
+  - Canonical candle schema must be byte-identical to the REST path
+    (`tests/test_mcp_rest_parity.py` — same seed, same symbols, same timeframe → equal panels).
+  - Gated behind `data_source: rest|mcp` in YAML; default remains `"rest"`.
 
-## Pilot: multi-ticker inputs for `MSTR` direction
+## Pilot: small-universe drill-down for `MSTR`
 
-As a concrete stepping stone toward a full universe ranker, define a
-**minimum viable universe**: one **target** symbol (`MSTR`) and **2–3 predictor**
-symbols whose returns plausibly lead or co-move with MSTR's Bitcoin-heavy
-balance-sheet narrative. At each aligned timestamp, the model sees all symbols'
-lookback features (with masks for missing rows) and predicts MSTR's next-period
-**direction** and / or **raw or market-relative return**; later, generalize the
-same machinery to a larger cross-section.
+The pilot is a **small-universe special case of the v1 ranker**, not a separate
+direction classifier. A 3–4 symbol basket (target + predictors) is used to
+smoke-test the full pipeline — tensor layout, masking, alignment, leakage
+rules, metrics — before scaling the watchlist. `target_symbol: "MSTR"` is a
+**reporting / drill-down key only**: the model trains on the full
+cross-section and loss ignores it unless `loss` is switched by a future
+ablation.
 
-Note: in v1 the ranker is trained over the **full cross-section** and
-`target_symbol` is a reporting / drill-down key only. A dedicated
-MSTR-directional head is an ablation under M10, not part of the core pipeline.
+A dedicated MSTR-directional head is explicitly **not** part of v1; it is
+listed as an optional ablation under M10 and only begins if the cross-sectional
+ranker fails to outperform baselines.
 
 **Suggested predictor tickers (verify availability on your Alpha Vantage plan):**
 
@@ -469,7 +718,7 @@ Reasonable alternatives if a symbol is missing or illiquid on your feed:
 For v1, prefer **IBIT + COIN** (2 tickers) and add **QQQ** as a third once
 alignment and masking are stable.
 
-**Modeling note:** this pilot is the small-universe special case of the
-cross-sectional design: `num_symbols` is 3–4, but tensor layout, masking, and
-leakage rules match the full plan so scaling the watchlist does not require a
-rewrite.
+**Modeling note:** tensor layout, masking, loss, metrics, and leakage rules
+are identical to the full-universe configuration; only `len(symbols)` changes.
+Scaling from the pilot basket to a full watchlist must not require any code
+changes outside `configs/universe.yaml`.
