@@ -1,181 +1,193 @@
 # stock-transformer
 
-Multi-timeframe autoregressive candle transformer **and** a **multi-ticker universe** ranker with walk-forward backtesting.
+Multi-timeframe autoregressive candle transformer **and** a **multi-ticker universe** ranker with walk-forward backtesting. The primary interface is the **`stx`** CLI (Click).
 
 Requires **Python 3.11+**.
 
-## Concept
+## What it does
 
-### Single-symbol mode (default)
+- **Single-symbol mode (default):** Each OHLCV candle from multiple timeframes is a token; a causal Transformer predicts the next candle (regression + direction).
+- **Universe mode (`experiment_mode: universe`):** A ranker scores every symbol on a shared calendar with strict point-in-time features and cross-sectional targets.
 
-Each OHLCV candle — from any timeframe (minute, hour, day, week, month) — is
-treated as a **token**. All past candles up to a prediction point are fed into
-a causal Transformer encoder. The model predicts the **next candle** — both its
-OHLCV log-returns (regression) and its direction (classification: up / down).
+See **`plan.md`** for milestones and **`CHANGELOG.md`** for release notes.
 
-### Universe mode (`experiment_mode: universe`)
-
-Several tickers share a **global timestamp grid** per timeframe. At each time
-`t`, the model sees a lookback tensor `[lookback, num_symbols, features]` with
-**masks** for missing rows, and is trained to score or rank symbols using
-**cross-sectional targets** (e.g. forward return minus the peer median at `t`).
-This matches the design in `plan.md` (pilot: e.g. `MSTR` with predictors such as
-`IBIT`, `COIN`, `QQQ`).
-
-The backtest enforces **strict point-in-time discipline**: features use only data
-≤ `t`; labels use returns from `t` to `t+1`. Walk-forward folds use the same
-global time cuts for every symbol.
-
-## Setup
+## Installation
 
 **Recommended** (matches CI and `uv.lock`):
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # or install uv your way
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --extra dev
 ```
 
-Run the CLI with `uv run stx-backtest …` or activate the project venv that `uv sync` creates.
+The `stx` command is installed into the project environment. Use `uv run stx …` or activate the venv created by `uv sync`.
 
-**Alternative** (pip):
+**pip / editable install:**
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Runtime dependencies include **PyTorch**, **pandas**, **PyArrow**, and **Pydantic** (configs are validated and defaulted before each run).
+Runtime dependencies include **PyTorch**, **pandas**, **PyArrow**, **Pydantic**, and **Click**.
 
-On **Apple Silicon** the default config uses `device: "auto"` which picks MPS
-when available. Override to `"cpu"` or `"cuda"` if needed.
-
-## Quick start — synthetic data (no API key required)
-
-Single-symbol pipeline:
+## Quickstart (synthetic, no API key)
 
 ```bash
-uv run stx-backtest --synthetic
-# or: stx-backtest --synthetic
+uv run stx backtest --synthetic
+uv run stx backtest --synthetic -c configs/universe.yaml
 ```
 
-Universe / cross-sectional pipeline:
+## Live data (Alpha Vantage)
+
+Put `ALPHAVANTAGE_API_KEY` in a **`.env`** file at the repo root (see `.env.example`) or export it. The CLI loads it via `python-dotenv`.
 
 ```bash
-uv run stx-backtest --synthetic -c configs/universe.yaml
+uv run stx fetch
+uv run stx backtest -c configs/sample.yaml
 ```
 
-## Live data via Alpha Vantage
+## CLI reference (`stx`)
 
-Put your API key in a **`.env`** file at the repo root (copy from [`.env.example`](.env.example)):
-`ALPHAVANTAGE_API_KEY=your_key_here`. The CLI and `scripts/fetch_sample_data.py` load it
-automatically via [python-dotenv](https://pypi.org/project/python-dotenv/). Alternatively,
-`export ALPHAVANTAGE_API_KEY=...` in your shell.
+Global options (before the subcommand):
+
+| Option | Meaning |
+|--------|---------|
+| `-h`, `--help` | Help for `stx` or the subcommand. |
+| `--version` | Version, PyTorch build, and resolved `auto` device. |
+| `-v` | INFO logging. |
+| `-vv` | DEBUG logging. |
+| `-q`, `--quiet` | Warnings and errors only. |
+
+Subcommands:
+
+| Command | Purpose |
+|---------|---------|
+| `stx backtest` | Run walk-forward experiment from YAML (single-symbol or universe). |
+| `stx fetch` | Download daily-adjusted OHLCV for the default pilot universe into `cache_dir`. |
+| `stx sweep` | Run universe experiment for each ranking loss and merge `by_loss` (see `backtest/loss_sweep.py`). |
+| `stx validate` | Load and validate YAML only (no training). Useful in CI. |
+| `stx version` | Same information as `stx --version`. |
+
+### `stx backtest`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-c`, `--config` | `configs/default.yaml` | Experiment YAML path. |
+| `--synthetic` | off | Use built-in synthetic data (no API). |
+| `--device` | (from env / YAML) | PyTorch device override: `auto`, `cpu`, `mps`, `cuda`, `cuda:N`. |
+
+**Legacy:** `stx-backtest` is an alias for `stx backtest` (same flags).
+
+### `stx fetch`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cache-dir` | `data` | Root for `raw/` and `canonical/`. |
+| `--symbols` | MSTR IBIT COIN QQQ | Repeatable symbol list. |
+| `--refresh` | off | Force re-download and overwrite canonical CSV. |
+
+### `stx sweep`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-c`, `--config` | `configs/universe.yaml` | Universe YAML. |
+| `--synthetic` | off | Synthetic universe data. |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success. |
+| 1 | Invalid or missing config, validation error, or runtime error. |
+| 2 | Partial failure (e.g. fold errors) or no folds — inspect `summary.json`. |
+| 130 | Interrupted (Ctrl+C) after best-effort artifact write. |
+
+## Configuration precedence
+
+For keys supported by both file and environment:
+
+1. **CLI flags** (e.g. `stx backtest --device cpu`)
+2. **Environment variables** `STX_DEVICE`, `STX_CACHE_DIR`, `STX_ARTIFACTS_DIR`, `STX_EPOCHS`
+3. **YAML** values
+4. **Pydantic defaults** in `config_models.py`
+
+Unknown YAML keys log a **warning** (possible typo) but are ignored after validation of known fields.
+
+## Example commands
 
 ```bash
-uv run stx-backtest -c configs/default.yaml
-uv run stx-backtest -c configs/universe.yaml
+# Validate config before a long run
+uv run stx validate -c configs/universe.yaml
+
+# Verbose single-symbol run
+uv run stx -v backtest --synthetic -c configs/default.yaml
+
+# Fetch only pilot symbols, custom cache
+uv run stx fetch --cache-dir data --symbols MSTR --symbols QQQ
+
+# Loss sweep (universe config)
+uv run stx sweep --synthetic -c configs/universe.yaml
 ```
 
-The client fetches candles per timeframe, respects throttling, caches raw JSON,
-and writes canonical data under `cache_dir` (CSV and optional **partitioned**
-`csv` / `parquet` store when `store` is set in universe config). Universe mode
-fetches every symbol in the YAML list.
+## Shell completion (bash)
 
-### Quick end-to-end with real sample data
-
-Download the pilot universe (MSTR, IBIT, COIN, QQQ) daily-adjusted bars once
-(~1 minute with Alpha Vantage throttling), then run the universe backtest
-fully offline using the partitioned cache:
+Generate completion script (requires Click):
 
 ```bash
-# After setting ALPHAVANTAGE_API_KEY in .env (or exporting it):
-uv run python scripts/fetch_sample_data.py
-uv run stx-backtest -c configs/sample.yaml
-# Artifacts: artifacts/universe_run_<UTC-timestamp>/
+_STX_COMPLETE=bash_source stx > ~/.stx-complete.bash
+echo 'source ~/.stx-complete.bash' >> ~/.bashrc
 ```
 
-`configs/sample.yaml` uses a smaller model and fewer epochs than `configs/universe.yaml`
-for a fast smoke run; adjust as needed. Raw JSON and canonical CSV live under
-`data/` (`data/raw/`, `data/canonical/`, etc.) — these directories are gitignored.
+A short note lives in `completions/stx.bash`.
 
-## CLI
+## Troubleshooting
 
-- `-c` / `--config` — experiment YAML (default: `configs/default.yaml`).
-- `--synthetic` — skip the API and use built-in random-walk data.
-- `--device` — PyTorch device override (`auto`, `mps`, `cpu`, `cuda`, `cuda:N`). Takes precedence over the `device` key in YAML. You can also set **`STX_DEVICE`** in `.env` or the environment (overridden by `--device`).
+- **Missing API key:** `stx fetch` / live `backtest` need `ALPHAVANTAGE_API_KEY` in the environment or `.env`.
+- **MPS not available:** If YAML sets `device: mps` on non-Apple hardware, use `stx backtest --device cpu` or set `STX_DEVICE=cpu`.
+- **CUDA / MPS errors:** Use `--device cpu` for reproducible CPU-only runs.
+- **Config validation:** Run `stx validate -c your.yaml` for fast feedback; Pydantic errors are printed as bullet lists.
 
-On **Apple Silicon**, `device: "auto"` or `device: "mps"` in YAML uses the GPU backend when PyTorch reports MPS as available; use `cpu` if you hit an unsupported op or want deterministic CPU-only runs.
-
-Exit codes: **0** success, **1** missing/unreadable config, **2** partial failure
-(e.g. a walk-forward fold raised) or no folds — see `summary.json` and optional
-`fold_errors.log` under the run directory.
-
-## Configuration
+## Configuration files
 
 | File | Purpose |
 |------|---------|
-| `configs/default.yaml` | Single-symbol multi-timeframe next-candle prediction |
-| `configs/universe.yaml` | Multi-ticker universe, cross-sectional labels, ranker |
-| `configs/sample.yaml` | Same universe, smaller model/folds; use after `scripts/fetch_sample_data.py` |
+| `configs/default.yaml` | Single-symbol multi-timeframe |
+| `configs/universe.yaml` | Universe ranker |
+| `configs/sample.yaml` | Smaller universe smoke run |
 
-YAML is validated with **Pydantic**; omitted keys get defaults aligned with these
-files (so small config snippets in tests still work).
-
-**Universe highlights:**
-
-- `symbols`, `target_symbol` (reporting key), `timeframe`, `lookback`, `min_coverage_symbols`
-- `label_mode`: `cross_sectional_return`, `raw_return`, `equal_weighted_return`, `sector_neutral_return` (sector map required for the last)
-- `store`: `csv` or `parquet`; `data_source`: `rest` or `mcp`
-- `loss`: `mse`, `listnet`, `approx_ndcg`
-- Optional **`portfolio_sim`** block (top‑k book on test folds; see `configs/universe.yaml`)
-- Optional training controls (defaults preserve prior behavior): `early_stopping_patience` (0 = off), `lr_reduce_on_plateau`, `lr_scheduler_patience`, `lr_scheduler_factor`, `lr_scheduler_min_lr`
-
-## Architecture
-
-**Single-symbol:** multi-timeframe token sequence → causal Transformer →
-regression + direction heads.
-
-**Universe:** per-symbol **temporal** Transformer over lookback → **cross-sectional**
-Transformer over symbols → one **score per ticker**. Training uses the chosen
-ranking loss on masked finite targets; evaluation includes Spearman, Kendall,
-NDCG@k, top‑k hit rate, and baselines (momentum, mean reversion, equal scores,
-optional linear / GBT tabular rankers).
+Universe highlights: `symbols`, `label_mode`, `store`, `data_source`, `loss`, optional `portfolio_sim`, `inference_batch_size` for batched inference.
 
 ## Artifacts
 
-Each run writes under `artifacts_dir` (default `artifacts/`): `config_snapshot.yaml`,
-`summary.json` (includes `git_sha` when available), per-fold predictions CSV, and
-universe-only files such as `feature_schema.json`, `folds.json`,
-`universe_membership.json`. Training emits **`training_log_fold_<id>.csv`**
-(epoch / train & val loss / learning rate). On fold failures, **`fold_errors.log`**
-and `summary.json` entries include a **traceback**.
+Runs write under `artifacts_dir` (default `artifacts/`): `config_snapshot.yaml`, `summary.json`, `training_log_fold_*.csv`, prediction CSVs, and universe extras (`feature_schema.json`, `folds.json`, `universe_membership.json`). On fold failures, see `fold_errors.log`.
 
-## Tests and development
+## Tests and quality
 
 ```bash
 uv run pytest -q
-uv run pytest -q --cov=stock_transformer --cov-report=term-missing   # as in CI
+uv run pytest -q --cov=stock_transformer --cov-report=term-missing
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src/stock_transformer
 ```
 
-CI (GitHub Actions) runs **Ruff** (lint + format check), **mypy**, and **pytest**
-with coverage on Python **3.11** and **3.12**.
+CI runs Ruff, mypy, and pytest on Python **3.11** and **3.12**. A release workflow (`.github/workflows/release.yml`) builds and can publish on `v*` tags when `PYPI_API_TOKEN` is configured.
 
 ## Project structure
 
-```
+```text
 src/stock_transformer/
-├── cli.py              # stx-backtest entrypoint
-├── config_models.py    # Pydantic experiment schemas + coercion
-├── config_validate.py  # Public validate_* helpers (used in tests)
-├── data/               # Alpha Vantage client, alignment, universe helpers, synthetic
-├── features/           # Multi-timeframe tokens; universe tensor assembly
-├── labels/             # Cross-sectional return and bucket helpers
-├── model/              # CandleTransformer, TransformerRanker, baselines, losses
-└── backtest/           # Walk-forward splits, metrics, training loops, runners
+├── cli.py                 # stx entrypoint (Click)
+├── device.py              # resolve_device (no torch.nn imports)
+├── config_models.py       # Pydantic
+├── config_validate.py
+├── data/                  # Alpha Vantage, alignment, cache, fetch helpers
+├── features/              # Sequences, universe tensor
+├── model/                 # Transformers, baselines, losses
+└── backtest/              # Walk-forward, metrics, training, runners, artifacts
 ```
 
-See **`plan.md`** for the milestone tracker, glossary, and roadmap (e.g. further
-store/label/invariant work).
+## Contributing
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, architecture notes, and conventions.

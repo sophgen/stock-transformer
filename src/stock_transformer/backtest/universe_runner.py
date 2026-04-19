@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-import yaml
 from scipy.stats import rankdata
 
+from stock_transformer.backtest.artifacts import save_config_snapshot, save_fold_payload, save_summary
 from stock_transformer.backtest.metrics import (
     aggregate_fold_metrics,
     kendall_per_timestamp,
     masked_regression_metrics,
     ndcg_at_k_per_timestamp,
     per_sector_metric_summary,
+    safe_nanmean,
     spearman_per_timestamp,
     top_k_hit_rate,
 )
@@ -44,6 +46,7 @@ from stock_transformer.data.universe import (
     membership_table_from_panel,
     sectors_for_symbols,
 )
+from stock_transformer.device import resolve_device
 from stock_transformer.features.scaling import TrainOnlyScaler
 from stock_transformer.features.tabular import flatten_universe_sample
 from stock_transformer.features.universe_tensor import (
@@ -61,15 +64,9 @@ from stock_transformer.model.baselines_tabular import (
     fit_linear_cs_ranker,
     scatter_predictions,
 )
-from stock_transformer.model.transformer_classifier import resolve_device
-from stock_transformer.model.transformer_ranker import TransformerRanker
+from stock_transformer.model.transformer_ranker import TransformerRanker, batch_predict
 
-
-def _safe_nanmean(a: np.ndarray) -> float:
-    a = np.asarray(a, dtype=np.float64)
-    if not np.any(np.isfinite(a)):
-        return float("nan")
-    return float(np.nanmean(a))
+logger = logging.getLogger(__name__)
 
 
 def _ranks_descending_matrix(vals: np.ndarray) -> np.ndarray:
@@ -84,23 +81,6 @@ def _ranks_descending_matrix(vals: np.ndarray) -> np.ndarray:
     return out
 
 
-def _predict_ranker(
-    model: TransformerRanker,
-    X: np.ndarray,
-    mask: np.ndarray,
-    device: torch.device,
-) -> np.ndarray:
-    model.eval()
-    parts: list[np.ndarray] = []
-    bs = 128
-    with torch.no_grad():
-        for i in range(0, len(X), bs):
-            xf = torch.from_numpy(X[i : i + bs]).float().to(device)
-            mk = torch.from_numpy(mask[i : i + bs]).bool().to(device)
-            parts.append(model(xf, mk).cpu().numpy())
-    return np.concatenate(parts, axis=0)
-
-
 def run_universe_experiment(
     config: dict[str, Any],
     *,
@@ -109,10 +89,11 @@ def run_universe_experiment(
     config = coerce_universe_config(config)
     u = load_universe_config_from_dict(config)
     device = resolve_device(str(config.get("device", "auto")))
+    infer_bs = int(config.get("inference_batch_size", 128))
     cache_dir = Path(str(config.get("cache_dir", "data")))
     art = Path(str(config.get("artifacts_dir", "artifacts")))
     run_dir = allocate_run_dir(art, "universe_run")
-    (run_dir / "config_snapshot.yaml").write_text(yaml.dump(config, sort_keys=True))
+    save_config_snapshot(run_dir, config)
 
     feature_names: tuple[str, ...] = tuple(config.get("features") or list(DEFAULT_UNIVERSE_FEATURE_NAMES))
     fs = feature_schema(feature_names)
@@ -156,12 +137,13 @@ def run_universe_experiment(
             "error": "sector_map_path required for sector_neutral_return",
             "run_dir": str(run_dir),
         }
-        (run_dir / "summary.json").write_text(json.dumps(err_out, indent=2, default=str))
+        save_summary(run_dir, err_out)
         return err_out
 
     sectors_for_labels: np.ndarray | None = sectors_arr if u.label_mode == "sector_neutral_return" else None
 
     if use_synthetic:
+        logger.info("Synthetic universe candles (%s symbols, tf=%s)", len(symbols), tf)
         candles = synthetic_universe_candles(
             int(config.get("synthetic_n_bars", 600)),
             symbols,
@@ -169,6 +151,7 @@ def run_universe_experiment(
             seed=int(config.get("seed", 42)),
         )
     else:
+        logger.info("Loading universe candles (%s symbols, tf=%s)", len(symbols), tf)
         client = AlphaVantageClient(cache_dir=cache_dir)
         candles = fetch_candles_for_universe(
             client,
@@ -231,7 +214,7 @@ def run_universe_experiment(
                 "timestamp_end": str(ts_pred.iloc[fold.test.stop - 1]),
             },
         }
-    (run_dir / "folds.json").write_text(json.dumps(folds_payload, indent=2, default=str))
+    save_fold_payload(run_dir, folds_payload)
 
     summary: dict[str, Any] = {
         "experiment": "universe",
@@ -250,8 +233,9 @@ def run_universe_experiment(
 
     if not folds:
         summary["error"] = "no_folds"
-        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-        (run_dir / "predictions_universe.csv").write_text(
+        save_summary(run_dir, summary)
+        pred_path = run_dir / "predictions_universe.csv"
+        pred_path.write_text(
             "timestamp,symbol,timeframe,y_true_raw_return,y_true_relative_return,"
             "y_score,y_rank_pred,y_rank_true,fold_id\n"
         )
@@ -263,144 +247,165 @@ def run_universe_experiment(
     per_fold_sector: list[dict[str, dict[str, float]]] = []
     portfolio_fold_summaries: list[dict[str, Any]] = []
 
-    for fold in folds:
-        try:
-            assert_fold_chronology(ts_pred, fold)
-            sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
+    logger.info("Universe walk-forward: %s samples, %s folds", n_samples, len(folds))
 
-            scaler = TrainOnlyScaler()
-            scaler.fit(X[sl_tr], mask[sl_tr])
-            X_tr = scaler.transform(X[sl_tr])
-            X_va = scaler.transform(X[sl_va])
-            X_te = scaler.transform(X[sl_te])
+    try:
+        for fold in folds:
+            try:
+                assert_fold_chronology(ts_pred, fold)
+                logger.info("Universe fold %s", fold.fold_id)
+                sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
 
-            model = TransformerRanker(
-                n_features=int(X.shape[-1]),
-                n_symbols=len(symbols),
-                d_model=int(config["d_model"]),
-                nhead=int(config["nhead"]),
-                num_temporal_layers=int(config.get("num_temporal_layers", 2)),
-                num_cross_layers=int(config.get("num_cross_layers", 1)),
-                dim_feedforward=int(config["dim_feedforward"]),
-                dropout=float(config["dropout"]),
-                max_seq_len=int(X_tr.shape[1]) + 8,
-            ).to(device)
-            log_path = run_dir / f"training_log_fold_{fold.fold_id}.csv"
-            model = train_transformer_ranker(
-                X_tr,
-                mask[sl_tr],
-                y[sl_tr],
-                X_va,
-                mask[sl_va],
-                y[sl_va],
-                model,
-                config,
-                device,
-                loss_name,
-                log_path=log_path,
-            )
+                scaler = TrainOnlyScaler()
+                scaler.fit(X[sl_tr], mask[sl_tr])
+                X_tr = scaler.transform(X[sl_tr])
+                X_va = scaler.transform(X[sl_va])
+                X_te = scaler.transform(X[sl_te])
 
-            if bool(config.get("save_models", False)):
-                torch.save(
-                    model.state_dict(),
-                    run_dir / f"model_state_fold_{fold.fold_id}.pt",
+                model = TransformerRanker(
+                    n_features=int(X.shape[-1]),
+                    n_symbols=len(symbols),
+                    d_model=int(config["d_model"]),
+                    nhead=int(config["nhead"]),
+                    num_temporal_layers=int(config.get("num_temporal_layers", 2)),
+                    num_cross_layers=int(config.get("num_cross_layers", 1)),
+                    dim_feedforward=int(config["dim_feedforward"]),
+                    dropout=float(config["dropout"]),
+                    max_seq_len=int(X_tr.shape[1]) + 8,
+                ).to(device)
+                log_path = run_dir / f"training_log_fold_{fold.fold_id}.csv"
+                model = train_transformer_ranker(
+                    X_tr,
+                    mask[sl_tr],
+                    y[sl_tr],
+                    X_va,
+                    mask[sl_va],
+                    y[sl_va],
+                    model,
+                    config,
+                    device,
+                    loss_name,
+                    log_path=log_path,
                 )
 
-            pred_te = _predict_ranker(model, X_te, mask[sl_te], device)
-            y_te = y[sl_te]
-            raw_te = raw_ret[sl_te]
+                if bool(config.get("save_models", False)):
+                    torch.save(
+                        model.state_dict(),
+                        run_dir / f"model_state_fold_{fold.fold_id}.pt",
+                    )
 
-            rho = spearman_per_timestamp(pred_te, y_te, min_valid=u.min_coverage_symbols)
-            tau = kendall_per_timestamp(pred_te, y_te, min_valid=u.min_coverage_symbols)
-            ndcg = ndcg_at_k_per_timestamp(pred_te, y_te, k=min(3, len(symbols)))
-            row: dict[str, Any] = {
-                "fold_id": fold.fold_id,
-                "spearman_mean": _safe_nanmean(rho),
-                "kendall_mean": _safe_nanmean(tau),
-                "ndcg3_mean": _safe_nanmean(ndcg),
-                "top2_hit": top_k_hit_rate(pred_te, y_te, k=2, min_valid=u.min_coverage_symbols),
-            }
-            m_tgt = masked_regression_metrics(y_te[:, tgt_ix], pred_te[:, tgt_ix])
-            row.update({f"target_{k}": v for k, v in m_tgt.items()})
+                pred_te = batch_predict(model, X_te, mask[sl_te], device, batch_size=infer_bs)
+                y_te = y[sl_te]
+                raw_te = raw_ret[sl_te]
 
-            mom = momentum_rank_scores(close, end_rows=end_row[sl_te], lookback=lookback)
-            mrev = mean_reversion_rank_scores(close, end_rows=end_row[sl_te], lookback=lookback)
-            eq = equal_score_baseline(len(y_te), len(symbols))
-            row["baseline_momentum_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(mom, y_te))
-            row["baseline_mean_reversion_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(mrev, y_te))
-            row["baseline_equal_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(eq, y_te))
+                rho = spearman_per_timestamp(pred_te, y_te, min_valid=u.min_coverage_symbols)
+                tau = kendall_per_timestamp(pred_te, y_te, min_valid=u.min_coverage_symbols)
+                ndcg = ndcg_at_k_per_timestamp(pred_te, y_te, k=min(3, len(symbols)))
+                row: dict[str, Any] = {
+                    "fold_id": fold.fold_id,
+                    "spearman_mean": safe_nanmean(rho),
+                    "kendall_mean": safe_nanmean(tau),
+                    "ndcg3_mean": safe_nanmean(ndcg),
+                    "top2_hit": top_k_hit_rate(pred_te, y_te, k=2, min_valid=u.min_coverage_symbols),
+                }
+                m_tgt = masked_regression_metrics(y_te[:, tgt_ix], pred_te[:, tgt_ix])
+                row.update({f"target_{k}": v for k, v in m_tgt.items()})
 
-            Xf_tr, yf_tr, gid_tr, _sid_tr = flatten_universe_sample(X[sl_tr], mask[sl_tr], y[sl_tr])
-            Xf_te, _, gid_te, sid_te = flatten_universe_sample(X[sl_te], mask[sl_te], y[sl_te])
-            if Xf_tr.shape[0] >= 8 and Xf_te.shape[0] >= 1:
-                lin = fit_linear_cs_ranker(Xf_tr, yf_tr, gid_tr, alpha=1.0)
-                gbt = fit_gbt_ranker(Xf_tr, yf_tr, gid_tr)
-                plin = lin.predict(Xf_te.astype(np.float64, copy=False))
-                pgbt = gbt.predict(Xf_te)
-                s_lin = scatter_predictions(plin, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols))
-                s_gbt = scatter_predictions(pgbt, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols))
-                row["baseline_linear_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(s_lin, y_te))
-                row["baseline_gbt_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(s_gbt, y_te))
-            else:
-                row["baseline_linear_spearman_mean"] = float("nan")
-                row["baseline_gbt_spearman_mean"] = float("nan")
+                mom = momentum_rank_scores(close, end_rows=end_row[sl_te], lookback=lookback)
+                mrev = mean_reversion_rank_scores(close, end_rows=end_row[sl_te], lookback=lookback)
+                eq = equal_score_baseline(len(y_te), len(symbols))
+                row["baseline_momentum_spearman_mean"] = safe_nanmean(spearman_per_timestamp(mom, y_te))
+                row["baseline_mean_reversion_spearman_mean"] = safe_nanmean(spearman_per_timestamp(mrev, y_te))
+                row["baseline_equal_spearman_mean"] = safe_nanmean(spearman_per_timestamp(eq, y_te))
 
-            fold_rows.append(row)
-            per_fold_sector.append(per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2))
+                Xf_tr, yf_tr, gid_tr, _sid_tr = flatten_universe_sample(X[sl_tr], mask[sl_tr], y[sl_tr])
+                Xf_te, _, gid_te, sid_te = flatten_universe_sample(X[sl_te], mask[sl_te], y[sl_te])
+                if Xf_tr.shape[0] >= 8 and Xf_te.shape[0] >= 1:
+                    lin = fit_linear_cs_ranker(Xf_tr, yf_tr, gid_tr, alpha=1.0)
+                    gbt = fit_gbt_ranker(Xf_tr, yf_tr, gid_tr)
+                    plin = lin.predict(Xf_te.astype(np.float64, copy=False))
+                    pgbt = gbt.predict(Xf_te)
+                    s_lin = scatter_predictions(plin, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols))
+                    s_gbt = scatter_predictions(pgbt, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols))
+                    row["baseline_linear_spearman_mean"] = safe_nanmean(spearman_per_timestamp(s_lin, y_te))
+                    row["baseline_gbt_spearman_mean"] = safe_nanmean(spearman_per_timestamp(s_gbt, y_te))
+                else:
+                    row["baseline_linear_spearman_mean"] = float("nan")
+                    row["baseline_gbt_spearman_mean"] = float("nan")
 
-            pad_te = mask[sl_te][:, -1, :]
-            if psim_enabled:
-                psim_res = simulate_topk_portfolio(
-                    pred_te,
-                    raw_te,
-                    pad_last=pad_te,
-                    book=psim_book,
-                    top_k=psim_k,
-                    transaction_cost_one_way_bps=psim_bps,
-                    record_series=False,
-                )
-                portfolio_fold_summaries.append(
-                    {
-                        "fold_id": fold.fold_id,
-                        "n_periods": psim_res["n_periods"],
-                        "mean_gross_return": psim_res["mean_gross_return"],
-                        "mean_net_return": psim_res["mean_net_return"],
-                        "mean_turnover": psim_res["mean_turnover"],
-                        "mean_cost": psim_res["mean_cost"],
-                        "cumulative_gross_return": psim_res["cumulative_gross_return"],
-                        "cumulative_net_return": psim_res["cumulative_net_return"],
-                        "sharpe_net": psim_res["sharpe_net"],
-                    }
-                )
+                fold_rows.append(row)
+                per_fold_sector.append(per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2))
 
-            ranks_p = _ranks_descending_matrix(pred_te)
-            ranks_t = _ranks_descending_matrix(raw_te)
-            y_rel_all = raw_te - np.nanmedian(raw_te, axis=1, keepdims=True)
-            for i in range(pred_te.shape[0]):
-                ts = ts_pred.iloc[sl_te.start + i]
-                ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-                fold_id = fold.fold_id
-                for si, sym in enumerate(symbols):
-                    pad = pad_te[i, si]
-                    score = np.nan if pad else float(pred_te[i, si])
-                    pred_records.append(
+                pad_te = mask[sl_te][:, -1, :]
+                if psim_enabled:
+                    psim_res = simulate_topk_portfolio(
+                        pred_te,
+                        raw_te,
+                        pad_last=pad_te,
+                        book=psim_book,
+                        top_k=psim_k,
+                        transaction_cost_one_way_bps=psim_bps,
+                        record_series=False,
+                    )
+                    portfolio_fold_summaries.append(
                         {
-                            "timestamp": ts_iso,
-                            "symbol": sym,
-                            "timeframe": tf,
-                            "y_true_raw_return": raw_te[i, si],
-                            "y_true_relative_return": y_rel_all[i, si],
-                            "y_score": score,
-                            "y_rank_pred": ranks_p[i, si],
-                            "y_rank_true": ranks_t[i, si],
-                            "fold_id": fold_id,
+                            "fold_id": fold.fold_id,
+                            "n_periods": psim_res["n_periods"],
+                            "mean_gross_return": psim_res["mean_gross_return"],
+                            "mean_net_return": psim_res["mean_net_return"],
+                            "mean_turnover": psim_res["mean_turnover"],
+                            "mean_cost": psim_res["mean_cost"],
+                            "cumulative_gross_return": psim_res["cumulative_gross_return"],
+                            "cumulative_net_return": psim_res["cumulative_net_return"],
+                            "sharpe_net": psim_res["sharpe_net"],
                         }
                     )
-        except Exception as exc:  # noqa: BLE001
-            rec = fold_error_record(fold.fold_id, exc)
-            append_fold_error_log(run_dir, rec)
-            fold_errors.append(rec)
-            continue
+
+                ranks_p = _ranks_descending_matrix(pred_te)
+                ranks_t = _ranks_descending_matrix(raw_te)
+                y_rel_all = raw_te - np.nanmedian(raw_te, axis=1, keepdims=True)
+                for i in range(pred_te.shape[0]):
+                    ts = ts_pred.iloc[sl_te.start + i]
+                    ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    fold_id = fold.fold_id
+                    for si, sym in enumerate(symbols):
+                        pad = pad_te[i, si]
+                        score = np.nan if pad else float(pred_te[i, si])
+                        pred_records.append(
+                            {
+                                "timestamp": ts_iso,
+                                "symbol": sym,
+                                "timeframe": tf,
+                                "y_true_raw_return": raw_te[i, si],
+                                "y_true_relative_return": y_rel_all[i, si],
+                                "y_score": score,
+                                "y_rank_pred": ranks_p[i, si],
+                                "y_rank_true": ranks_t[i, si],
+                                "fold_id": fold_id,
+                            }
+                        )
+            except Exception as exc:  # noqa: BLE001 — isolate fold failures; log and continue
+                rec = fold_error_record(fold.fold_id, exc)
+                append_fold_error_log(run_dir, rec)
+                fold_errors.append(rec)
+                logger.exception("Universe fold %s failed", fold.fold_id)
+                continue
+    except KeyboardInterrupt:
+        logger.warning("Interrupted — saving partial universe results")
+        summary["error"] = "interrupted"
+        summary["folds"] = fold_rows
+        if fold_errors:
+            summary["fold_errors"] = fold_errors
+        pred_path = run_dir / "predictions_universe.csv"
+        if pred_records:
+            pd.DataFrame(pred_records).to_csv(pred_path, index=False)
+        else:
+            pred_path.write_text(
+                "timestamp,symbol,timeframe,y_true_raw_return,y_true_relative_return,"
+                "y_score,y_rank_pred,y_rank_true,fold_id\n"
+            )
+        save_summary(run_dir, summary)
+        raise
 
     summary["folds"] = fold_rows
     if fold_errors:
@@ -454,7 +459,8 @@ def run_universe_experiment(
             "y_score,y_rank_pred,y_rank_true,fold_id\n"
         )
 
-    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    save_summary(run_dir, summary)
+    logger.info("Universe run finished: %s", run_dir)
     return summary
 
 
@@ -473,9 +479,3 @@ def load_universe_config_from_dict(config: dict[str, Any]) -> UniverseConfig:
         label_mode=lm,
         raw=config,
     )
-
-
-def run_universe_from_config_path(path: str | Path, *, synthetic: bool = False) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    return run_universe_experiment(cfg, use_synthetic=synthetic)

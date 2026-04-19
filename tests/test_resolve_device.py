@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from stock_transformer.model.transformer_classifier import resolve_device
+from stock_transformer.device import resolve_device
 
 
 def test_resolve_cpu_explicit():

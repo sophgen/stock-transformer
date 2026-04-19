@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 LabelMode = Literal[
     "cross_sectional_return",
@@ -20,6 +23,7 @@ DataSource = Literal["rest", "mcp"]
 class SingleSymbolExperimentConfig(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
+    experiment_mode: Literal["single_symbol"] | None = None
     symbol: str = Field(min_length=1)
     timeframes: list[str] = Field(min_length=1)
     prediction_timeframe: str = "daily"
@@ -62,6 +66,20 @@ class SingleSymbolExperimentConfig(BaseModel):
     lr_scheduler_patience: int = Field(default=3, ge=1)
     lr_scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     lr_scheduler_min_lr: float = Field(default=1e-7, ge=0.0)
+
+    inference_batch_size: int = Field(default=256, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def warn_unknown_keys_single(cls, data: Any) -> Any:
+        """Log unknown YAML keys so typos are visible while keeping ``extra=ignore``."""
+        if not isinstance(data, dict):
+            return data
+        known = set(cls.model_fields.keys())
+        for k in data:
+            if k not in known:
+                logger.warning("Unknown config key %r (typo?)", k)
+        return data
 
     @field_validator("symbol")
     @classmethod
@@ -140,6 +158,19 @@ class UniverseExperimentConfig(BaseModel):
     lr_scheduler_patience: int = Field(default=3, ge=1)
     lr_scheduler_factor: float = Field(default=0.5, gt=0.0, lt=1.0)
     lr_scheduler_min_lr: float = Field(default=1e-7, ge=0.0)
+
+    inference_batch_size: int = Field(default=128, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def warn_unknown_keys_universe(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        known = set(cls.model_fields.keys())
+        for k in data:
+            if k not in known:
+                logger.warning("Unknown config key %r (typo?)", k)
+        return data
 
     @field_validator("symbols", mode="before")
     @classmethod

@@ -2,27 +2,23 @@
 
 from __future__ import annotations
 
-import json
-import os
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
 import yaml
 
+from stock_transformer.backtest.artifacts import save_config_snapshot, save_predictions_csv
+from stock_transformer.backtest.context import RunContext
+from stock_transformer.backtest.env_config import apply_stx_env_overrides
 from stock_transformer.backtest.metrics import (
     aggregate_fold_metrics,
     classification_metrics,
     regression_metrics,
 )
-from stock_transformer.backtest.run_helpers import (
-    allocate_run_dir,
-    append_fold_error_log,
-    fold_error_record,
-    git_head_short,
-)
+from stock_transformer.backtest.run_helpers import allocate_run_dir, append_fold_error_log, fold_error_record
 from stock_transformer.backtest.training import train_candle_transformer
 from stock_transformer.backtest.walkforward import (
     WalkForwardConfig,
@@ -32,53 +28,25 @@ from stock_transformer.backtest.walkforward import (
 from stock_transformer.config_models import coerce_experiment_config, coerce_single_symbol_config
 from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_timeframe
 from stock_transformer.data.synthetic import synthetic_multitimeframe_candles
+from stock_transformer.device import resolve_device
 from stock_transformer.features.sequences import (
     N_CANDLE_FEATURES,
     TIMEFRAME_IDS,
     build_multitimeframe_samples,
 )
-from stock_transformer.model.transformer_classifier import (
-    CandleTransformer,
-    predict_direction_proba,
-    resolve_device,
-)
+from stock_transformer.model.transformer_classifier import CandleTransformer, batch_predict
+
+logger = logging.getLogger(__name__)
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
+    """Load a YAML experiment file into a plain dict (no validation yet)."""
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-# ── inference ──────────────────────────────────────────────────────────────
-
-
-def _predict(
-    model: CandleTransformer,
-    X_feat: np.ndarray,
-    X_tf: np.ndarray,
-    X_mask: np.ndarray,
-    device: torch.device,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return (candle_preds, direction_probs) as numpy arrays."""
-    model.eval()
-    candle_parts: list[np.ndarray] = []
-    dir_parts: list[np.ndarray] = []
-    bs = 256
-    with torch.no_grad():
-        for i in range(0, len(X_feat), bs):
-            xf = torch.from_numpy(X_feat[i : i + bs]).float().to(device)
-            xt = torch.from_numpy(X_tf[i : i + bs]).long().to(device)
-            xm = torch.from_numpy(X_mask[i : i + bs]).bool().to(device)
-            c_pred, d_logit = model(xf, xt, xm)
-            candle_parts.append(c_pred.cpu().numpy())
-            dir_parts.append(predict_direction_proba(d_logit).cpu().numpy())
-    return np.concatenate(candle_parts), np.concatenate(dir_parts)
-
-
-# ── threshold tuning ───────────────────────────────────────────────────────
-
-
 def tune_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Grid-search a probability threshold on validation labels to maximize F1."""
     best_t, best_f1 = 0.5, -1.0
     for t in np.linspace(0.1, 0.9, 17):
         m = classification_metrics(y_true, y_prob, threshold=float(t))
@@ -86,9 +54,6 @@ def tune_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
             best_f1 = m["f1"]
             best_t = float(t)
     return best_t
-
-
-# ── main experiment loop ───────────────────────────────────────────────────
 
 
 def run_experiment_dispatch(
@@ -117,7 +82,8 @@ def run_experiment(
     cache_dir = Path(str(config.get("cache_dir", "data")))
     art = Path(str(config.get("artifacts_dir", "artifacts")))
     run_dir = allocate_run_dir(art, "run")
-    (run_dir / "config_snapshot.yaml").write_text(yaml.dump(config, sort_keys=True))
+    save_config_snapshot(run_dir, config)
+    infer_bs = int(config.get("inference_batch_size", 256))
 
     symbol = str(config["symbol"])
     timeframes: list[str] = list(config["timeframes"])
@@ -137,9 +103,8 @@ def run_experiment(
         step_bars=int(config["step_bars"]),
     )
 
-    # ── 1. data ingestion ──────────────────────────────────────────────
-    candles_by_tf: dict[str, pd.DataFrame]
     if use_synthetic:
+        logger.info("Using synthetic multi-timeframe candles (symbol=%s)", symbol)
         candles_by_tf = synthetic_multitimeframe_candles(
             n_daily=int(config.get("synthetic_n_daily", 1200)),
             symbol=symbol,
@@ -147,6 +112,7 @@ def run_experiment(
             timeframes=timeframes,
         )
     else:
+        logger.info("Fetching candles from cache/API (symbol=%s, timeframes=%s)", symbol, timeframes)
         client = AlphaVantageClient(cache_dir=cache_dir)
         candles_by_tf = {}
         for tf in timeframes:
@@ -166,7 +132,6 @@ def run_experiment(
     if prediction_tf not in candles_by_tf:
         raise ValueError(f"prediction_timeframe '{prediction_tf}' not in fetched timeframes {list(candles_by_tf)}")
 
-    # ── 2. multi-timeframe tokenization ────────────────────────────────
     X_feat, X_tf_ids, X_mask, y_reg, y_dir, ts_pred = build_multitimeframe_samples(
         candles_by_tf,
         prediction_tf=prediction_tf,
@@ -176,105 +141,135 @@ def run_experiment(
 
     n_samples = X_feat.shape[0]
     folds = generate_folds(n_samples, wf)
+    logger.info("Built %s samples, %s folds (device=%s)", n_samples, len(folds), device)
 
-    summary: dict[str, Any] = {
-        "symbol": symbol,
-        "prediction_timeframe": prediction_tf,
-        "timeframes": timeframes,
-        "n_samples": n_samples,
-        "n_folds": len(folds),
-        "device": str(device),
-        "folds": [],
-        "run_dir": str(run_dir),
-        "git_sha": git_head_short(),
-    }
+    ctx = RunContext.create(run_dir, device, config)
+    ctx.summary.update(
+        {
+            "symbol": symbol,
+            "prediction_timeframe": prediction_tf,
+            "timeframes": timeframes,
+            "n_samples": n_samples,
+            "n_folds": len(folds),
+            "device": str(device),
+            "folds": [],
+            "run_dir": str(run_dir),
+            "git_sha": ctx.git_sha,
+        }
+    )
 
     if not folds:
-        summary["error"] = "no_folds"
-        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-        return summary
+        ctx.summary["error"] = "no_folds"
+        ctx.finalize()
+        return ctx.summary
 
-    # ── 3. walk-forward loop ───────────────────────────────────────────
     fold_rows: list[dict[str, Any]] = []
     all_preds: list[pd.DataFrame] = []
     fold_errors: list[dict[str, Any]] = []
 
-    for fold in folds:
-        try:
-            assert_fold_chronology(ts_pred, fold)
+    try:
+        for fold in folds:
+            try:
+                assert_fold_chronology(ts_pred, fold)
+                logger.info("Fold %s: train/val/test slices", fold.fold_id)
 
-            sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
+                sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
 
-            n_tf = len(TIMEFRAME_IDS)
-            model = CandleTransformer(
-                n_candle_features=N_CANDLE_FEATURES,
-                n_timeframes=n_tf,
-                d_model=int(config["d_model"]),
-                nhead=int(config["nhead"]),
-                num_layers=int(config["num_layers"]),
-                dim_feedforward=int(config["dim_feedforward"]),
-                dropout=float(config["dropout"]),
-                max_seq_len=int(config.get("max_seq_len", 256)),
-            ).to(device)
-            log_path = run_dir / f"training_log_fold_{fold.fold_id}.csv"
-            model = train_candle_transformer(
-                X_feat[sl_tr],
-                X_tf_ids[sl_tr],
-                X_mask[sl_tr],
-                y_reg[sl_tr],
-                y_dir[sl_tr],
-                X_feat[sl_va],
-                X_tf_ids[sl_va],
-                X_mask[sl_va],
-                y_reg[sl_va],
-                y_dir[sl_va],
-                model,
-                config,
-                device,
-                log_path=log_path,
-            )
+                n_tf = len(TIMEFRAME_IDS)
+                model = CandleTransformer(
+                    n_candle_features=N_CANDLE_FEATURES,
+                    n_timeframes=n_tf,
+                    d_model=int(config["d_model"]),
+                    nhead=int(config["nhead"]),
+                    num_layers=int(config["num_layers"]),
+                    dim_feedforward=int(config["dim_feedforward"]),
+                    dropout=float(config["dropout"]),
+                    max_seq_len=int(config.get("max_seq_len", 256)),
+                ).to(device)
+                log_path = run_dir / f"training_log_fold_{fold.fold_id}.csv"
+                model = train_candle_transformer(
+                    X_feat[sl_tr],
+                    X_tf_ids[sl_tr],
+                    X_mask[sl_tr],
+                    y_reg[sl_tr],
+                    y_dir[sl_tr],
+                    X_feat[sl_va],
+                    X_tf_ids[sl_va],
+                    X_mask[sl_va],
+                    y_reg[sl_va],
+                    y_dir[sl_va],
+                    model,
+                    config,
+                    device,
+                    log_path=log_path,
+                )
 
-            # Validation — tune threshold
-            candle_va, prob_va = _predict(model, X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], device)
-            thr = tune_threshold(y_dir[sl_va], prob_va)
+                candle_va, prob_va = batch_predict(
+                    model, X_feat[sl_va], X_tf_ids[sl_va], X_mask[sl_va], device, batch_size=infer_bs
+                )
+                thr = tune_threshold(y_dir[sl_va], prob_va)
 
-            # Test
-            candle_te, prob_te = _predict(model, X_feat[sl_te], X_tf_ids[sl_te], X_mask[sl_te], device)
-            m_cls = classification_metrics(y_dir[sl_te], prob_te, threshold=thr)
-            m_reg = regression_metrics(y_reg[sl_te], candle_te)
+                candle_te, prob_te = batch_predict(
+                    model, X_feat[sl_te], X_tf_ids[sl_te], X_mask[sl_te], device, batch_size=infer_bs
+                )
+                m_cls = classification_metrics(y_dir[sl_te], prob_te, threshold=thr)
+                m_reg = regression_metrics(y_reg[sl_te], candle_te)
 
-            row: dict[str, Any] = {"fold_id": fold.fold_id, "threshold": thr}
-            row.update({f"test_cls_{k}": v for k, v in m_cls.items()})
-            row.update({f"test_reg_{k}": v for k, v in m_reg.items()})
-            fold_rows.append(row)
+                row: dict[str, Any] = {"fold_id": fold.fold_id, "threshold": thr}
+                row.update({f"test_cls_{k}": v for k, v in m_cls.items()})
+                row.update({f"test_reg_{k}": v for k, v in m_reg.items()})
+                fold_rows.append(row)
 
-            pred_df = pd.DataFrame(
-                {
-                    "timestamp": ts_pred.iloc[sl_te].values
-                    if hasattr(ts_pred, "iloc")
-                    else ts_pred[sl_te.start : sl_te.stop],
-                    "symbol": symbol,
-                    "y_dir_true": y_dir[sl_te],
-                    "y_dir_prob": prob_te,
-                    "y_dir_pred": (prob_te >= thr).astype(int),
-                    "y_close_ret_true": y_reg[sl_te, 3] if y_reg.ndim == 2 else y_reg[sl_te],
-                    "y_close_ret_pred": candle_te[:, 3] if candle_te.ndim == 2 else candle_te,
-                    "fold_id": fold.fold_id,
-                }
-            )
-            all_preds.append(pred_df)
-        except Exception as exc:  # noqa: BLE001
-            rec = fold_error_record(fold.fold_id, exc)
-            append_fold_error_log(run_dir, rec)
-            fold_errors.append(rec)
-            continue
+                pred_df = pd.DataFrame(
+                    {
+                        "timestamp": ts_pred.iloc[sl_te].values
+                        if hasattr(ts_pred, "iloc")
+                        else ts_pred[sl_te.start : sl_te.stop],
+                        "symbol": symbol,
+                        "y_dir_true": y_dir[sl_te],
+                        "y_dir_prob": prob_te,
+                        "y_dir_pred": (prob_te >= thr).astype(int),
+                        "y_close_ret_true": y_reg[sl_te, 3] if y_reg.ndim == 2 else y_reg[sl_te],
+                        "y_close_ret_pred": candle_te[:, 3] if candle_te.ndim == 2 else candle_te,
+                        "fold_id": fold.fold_id,
+                    }
+                )
+                all_preds.append(pred_df)
+            except Exception as exc:  # noqa: BLE001 — isolate fold failures; log and continue
+                rec = fold_error_record(fold.fold_id, exc)
+                append_fold_error_log(run_dir, rec)
+                fold_errors.append(rec)
+                logger.exception("Fold %s failed", fold.fold_id)
+                continue
+    except KeyboardInterrupt:
+        logger.warning("Interrupted — saving partial single-symbol results")
+        ctx.summary["error"] = "interrupted"
+        ctx.summary["folds"] = fold_rows
+        if fold_errors:
+            ctx.summary["fold_errors"] = fold_errors
+        pred_path = run_dir / f"predictions__{symbol}.csv"
+        _pred_cols = [
+            "timestamp",
+            "symbol",
+            "y_dir_true",
+            "y_dir_prob",
+            "y_dir_pred",
+            "y_close_ret_true",
+            "y_close_ret_pred",
+            "fold_id",
+        ]
+        save_predictions_csv(
+            pred_path, pd.concat(all_preds, ignore_index=True) if all_preds else None, columns=_pred_cols
+        )
+        ctx.finalize()
+        raise
 
-    summary["folds"] = fold_rows
+    ctx.summary["folds"] = fold_rows
     if fold_errors:
-        summary["error"] = "partial_failure"
-        summary["fold_errors"] = fold_errors
+        ctx.summary["error"] = "partial_failure"
+        ctx.summary["fold_errors"] = fold_errors
     if fold_rows:
-        summary["aggregate"] = aggregate_fold_metrics(fold_rows)
+        ctx.summary["aggregate"] = aggregate_fold_metrics(fold_rows)
 
     pred_path = run_dir / f"predictions__{symbol}.csv"
     _pred_cols = [
@@ -287,13 +282,11 @@ def run_experiment(
         "y_close_ret_pred",
         "fold_id",
     ]
-    if all_preds:
-        pd.concat(all_preds, ignore_index=True).to_csv(pred_path, index=False)
-    else:
-        pd.DataFrame(columns=_pred_cols).to_csv(pred_path, index=False)
+    save_predictions_csv(pred_path, pd.concat(all_preds, ignore_index=True) if all_preds else None, columns=_pred_cols)
 
-    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-    return summary
+    ctx.finalize()
+    logger.info("Run finished: %s", run_dir)
+    return ctx.summary
 
 
 def run_from_config_path(
@@ -302,13 +295,10 @@ def run_from_config_path(
     synthetic: bool = False,
     device: str | None = None,
 ) -> dict[str, Any]:
-    """Load YAML, apply device overrides (CLI > ``STX_DEVICE`` > file), validate, run."""
+    """Load YAML, apply env + device overrides (CLI > env > file), validate, run."""
     cfg = load_config(path)
+    apply_stx_env_overrides(cfg)
     if device is not None and str(device).strip():
         cfg["device"] = str(device).strip()
-    else:
-        env_dev = os.environ.get("STX_DEVICE", "").strip()
-        if env_dev:
-            cfg["device"] = env_dev
     cfg = coerce_experiment_config(cfg)
     return run_experiment_dispatch(cfg, use_synthetic=synthetic)

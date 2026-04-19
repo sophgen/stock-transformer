@@ -1,4 +1,4 @@
-"""M7b CLI exit codes and universe dispatch."""
+"""CLI exit codes, universe dispatch, and Click subcommands."""
 
 from __future__ import annotations
 
@@ -7,13 +7,16 @@ import sys
 from pathlib import Path
 
 import yaml
+from click.testing import CliRunner
+
+from stock_transformer.cli import cli
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def test_cli_missing_config_exit_1():
     r = subprocess.run(
-        [sys.executable, "-m", "stock_transformer.cli", "-c", str(REPO / "nope.yaml")],
+        [sys.executable, "-m", "stock_transformer.cli", "backtest", "-c", str(REPO / "nope.yaml")],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -34,7 +37,7 @@ def test_cli_universe_synthetic_exit_0(tmp_path):
     p = tmp_path / "u.yaml"
     p.write_text(yaml.dump(cfg))
     r = subprocess.run(
-        [sys.executable, "-m", "stock_transformer.cli", "--synthetic", "-c", str(p)],
+        [sys.executable, "-m", "stock_transformer.cli", "backtest", "--synthetic", "-c", str(p)],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -60,6 +63,7 @@ def test_cli_device_flag_overrides_yaml(tmp_path):
             sys.executable,
             "-m",
             "stock_transformer.cli",
+            "backtest",
             "--synthetic",
             "-c",
             str(p),
@@ -80,5 +84,19 @@ def test_cli_partial_failure_exit_2(tmp_path, monkeypatch):
         return {"run_dir": str(tmp_path), "fold_errors": [{"fold_id": 0, "error": "x"}]}
 
     monkeypatch.setattr(cli_mod, "run_from_config_path", boom)
-    code = cli_mod.main(["-c", str(REPO / "configs" / "default.yaml")])
-    assert code == 2
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.cli, ["backtest", "-c", str(REPO / "configs" / "default.yaml")])
+    assert result.exit_code == 2
+
+
+def test_stx_fetch_help():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["fetch", "--help"])
+    assert result.exit_code == 0
+    assert "cache-dir" in result.output.lower() or "--cache-dir" in result.output
+
+
+def test_stx_validate_good_config():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["validate", "-c", str(REPO / "configs" / "default.yaml")])
+    assert result.exit_code == 0

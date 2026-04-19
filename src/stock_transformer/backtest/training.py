@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import csv
+import logging
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 import torch
@@ -14,6 +16,10 @@ import torch.nn as nn
 from stock_transformer.model.losses import training_loss
 from stock_transformer.model.transformer_classifier import CandleTransformer
 from stock_transformer.model.transformer_ranker import TransformerRanker
+
+logger = logging.getLogger(__name__)
+
+TModule = TypeVar("TModule", bound=nn.Module)
 
 
 def _append_training_log_row(path: Path, row: dict[str, Any]) -> None:
@@ -24,6 +30,62 @@ def _append_training_log_row(path: Path, row: dict[str, Any]) -> None:
         if new_file:
             w.writeheader()
         w.writerow(row)
+
+
+def _run_supervised_epochs(
+    model: TModule,
+    cfg: dict[str, Any],
+    opt: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau | None,
+    *,
+    epochs: int,
+    train_epoch: Callable[[], float],
+    val_loss: Callable[[], float],
+    log_path: Path | None = None,
+) -> TModule:
+    """Optimizer-driven epoch loop with plateau scheduling, early stopping, and CSV logging."""
+    patience = int(cfg.get("early_stopping_patience", 0))
+    best_state = None
+    best_val = float("inf")
+    stalled = 0
+
+    for epoch in range(epochs):
+        train_loss_mean = train_epoch()
+        model.eval()
+        with torch.no_grad():
+            vloss = val_loss()
+
+        lr_now = float(opt.param_groups[0]["lr"])
+        if log_path is not None:
+            _append_training_log_row(
+                log_path,
+                {
+                    "epoch": epoch,
+                    "train_loss": train_loss_mean,
+                    "val_loss": vloss,
+                    "lr": lr_now,
+                },
+            )
+
+        if scheduler is not None:
+            scheduler.step(vloss)
+
+        improved = vloss < best_val - 1e-12
+        if improved:
+            best_val = vloss
+            best_state = deepcopy(model.state_dict())
+            stalled = 0
+        else:
+            stalled += 1
+
+        if patience > 0 and stalled >= patience:
+            break
+
+        logger.debug("epoch %s train=%.6f val=%.6f", epoch, train_loss_mean, vloss)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
 
 
 def train_candle_transformer(
@@ -51,7 +113,6 @@ def train_candle_transformer(
     dir_loss_fn = nn.BCEWithLogitsLoss()
     alpha = float(cfg.get("loss_alpha", 0.5))
 
-    patience = int(cfg.get("early_stopping_patience", 0))
     use_plateau = bool(cfg.get("lr_reduce_on_plateau", False))
     sched_patience = int(cfg.get("lr_scheduler_patience", 3))
     sched_factor = float(cfg.get("lr_scheduler_factor", 0.5))
@@ -80,11 +141,8 @@ def train_candle_transformer(
     bs = int(cfg["batch_size"])
     epochs = int(cfg["epochs"])
     n = xf_tr.size(0)
-    best_state = None
-    best_val = float("inf")
-    stalled = 0
 
-    for epoch in range(epochs):
+    def train_epoch() -> float:
         model.train()
         perm = torch.randperm(n, device=device)
         train_loss_acc = 0.0
@@ -99,42 +157,22 @@ def train_candle_transformer(
             opt.step()
             train_loss_acc += float(loss.detach())
             n_batches += 1
-        train_loss_mean = train_loss_acc / max(n_batches, 1)
+        return train_loss_acc / max(n_batches, 1)
 
-        model.eval()
-        with torch.no_grad():
-            c_pred_v, d_logit_v = model(xf_va, xtf_va, xm_va)
-            vloss = alpha * float(reg_loss_fn(c_pred_v, yr_va)) + (1 - alpha) * float(dir_loss_fn(d_logit_v, yd_va))
+    def val_loss_fn() -> float:
+        c_pred_v, d_logit_v = model(xf_va, xtf_va, xm_va)
+        return alpha * float(reg_loss_fn(c_pred_v, yr_va)) + (1 - alpha) * float(dir_loss_fn(d_logit_v, yd_va))
 
-        lr_now = float(opt.param_groups[0]["lr"])
-        if log_path is not None:
-            _append_training_log_row(
-                log_path,
-                {
-                    "epoch": epoch,
-                    "train_loss": train_loss_mean,
-                    "val_loss": vloss,
-                    "lr": lr_now,
-                },
-            )
-
-        if scheduler is not None:
-            scheduler.step(vloss)
-
-        improved = vloss < best_val - 1e-12
-        if improved:
-            best_val = vloss
-            best_state = deepcopy(model.state_dict())
-            stalled = 0
-        else:
-            stalled += 1
-
-        if patience > 0 and stalled >= patience:
-            break
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model
+    return _run_supervised_epochs(
+        model,
+        cfg,
+        opt,
+        scheduler,
+        epochs=epochs,
+        train_epoch=train_epoch,
+        val_loss=val_loss_fn,
+        log_path=log_path,
+    )
 
 
 def train_transformer_ranker(
@@ -151,6 +189,7 @@ def train_transformer_ranker(
     *,
     log_path: Path | None = None,
 ) -> TransformerRanker:
+    """Train the universe ranker with the chosen ranking loss."""
     torch.manual_seed(int(cfg.get("seed", 42)))
     np.random.seed(int(cfg.get("seed", 42)))
 
@@ -160,7 +199,6 @@ def train_transformer_ranker(
     gen = torch.Generator()
     gen.manual_seed(int(cfg.get("seed", 42)))
 
-    patience = int(cfg.get("early_stopping_patience", 0))
     use_plateau = bool(cfg.get("lr_reduce_on_plateau", False))
     sched_patience = int(cfg.get("lr_scheduler_patience", 3))
     sched_factor = float(cfg.get("lr_scheduler_factor", 0.5))
@@ -184,13 +222,10 @@ def train_transformer_ranker(
     xm_va, mk_va, yt_va = to_t(X_va), to_t(mask_va, torch.bool), to_t(y_va)
 
     n = xm_tr.size(0)
-    best_state = None
-    best_val = float("inf")
     pad_last_tr = mk_tr[:, -1, :]
     pad_last_va = mk_va[:, -1, :]
-    stalled = 0
 
-    for epoch in range(epochs):
+    def train_epoch() -> float:
         model.train()
         perm = torch.randperm(n, generator=gen).to(device)
         train_loss_acc = 0.0
@@ -206,40 +241,20 @@ def train_transformer_ranker(
             opt.step()
             train_loss_acc += float(loss.detach())
             n_batches += 1
-        train_loss_mean = train_loss_acc / max(n_batches, 1)
+        return train_loss_acc / max(n_batches, 1)
 
-        model.eval()
-        with torch.no_grad():
-            pv = model(xm_va, mk_va)
-            label_ok_va = torch.isfinite(yt_va) & (~pad_last_va)
-            vloss = float(training_loss(loss_name, pv, yt_va, mask_valid=label_ok_va))
+    def val_loss_fn() -> float:
+        pv = model(xm_va, mk_va)
+        label_ok_va = torch.isfinite(yt_va) & (~pad_last_va)
+        return float(training_loss(loss_name, pv, yt_va, mask_valid=label_ok_va))
 
-        lr_now = float(opt.param_groups[0]["lr"])
-        if log_path is not None:
-            _append_training_log_row(
-                log_path,
-                {
-                    "epoch": epoch,
-                    "train_loss": train_loss_mean,
-                    "val_loss": vloss,
-                    "lr": lr_now,
-                },
-            )
-
-        if scheduler is not None:
-            scheduler.step(vloss)
-
-        improved = vloss < best_val - 1e-12
-        if improved:
-            best_val = vloss
-            best_state = deepcopy(model.state_dict())
-            stalled = 0
-        else:
-            stalled += 1
-
-        if patience > 0 and stalled >= patience:
-            break
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model
+    return _run_supervised_epochs(
+        model,
+        cfg,
+        opt,
+        scheduler,
+        epochs=epochs,
+        train_epoch=train_epoch,
+        val_loss=val_loss_fn,
+        log_path=log_path,
+    )

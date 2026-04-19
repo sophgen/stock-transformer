@@ -10,6 +10,9 @@ past tokens, and the last-token representation feeds:
 
 from __future__ import annotations
 
+import warnings
+
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -105,9 +108,18 @@ class CandleTransformer(nn.Module):
 
 
 class CandleTransformerClassifier(CandleTransformer):
-    """Legacy wrapper — delegates to :class:`CandleTransformer`."""
+    """Legacy wrapper — delegates to :class:`CandleTransformer`.
+
+    Deprecated: use :class:`CandleTransformer` with multi-timeframe ids; scheduled
+    for removal once external callers migrate (see CHANGELOG).
+    """
 
     def __init__(self, n_features: int, **kwargs) -> None:
+        warnings.warn(
+            "CandleTransformerClassifier is deprecated; use CandleTransformer.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         kwargs.setdefault("n_candle_features", n_features)
         super().__init__(**kwargs)
 
@@ -125,38 +137,26 @@ def predict_proba(logits: torch.Tensor) -> torch.Tensor:
 predict_direction_proba = predict_proba
 
 
-# ---------------------------------------------------------------------------
-# Device helper
-# ---------------------------------------------------------------------------
-
-
-def resolve_device(name: str = "auto") -> torch.device:
-    """Map config/CLI device string to ``torch.device``.
-
-    ``auto`` prefers MPS (Apple Silicon) when built and available, then CUDA, else CPU.
-    Accepts ``cpu``, ``mps``, ``cuda``, ``cuda:N``, or any string ``torch.device`` understands.
-    """
-    raw = str(name).strip()
-    key = raw.lower()
-    if key == "auto":
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        return torch.device("cpu")
-    if key == "mps":
-        if not torch.backends.mps.is_available():
-            raise ValueError(
-                "device is 'mps' but MPS is not available. "
-                "Use device: auto or cpu, or a PyTorch build with MPS support."
-            )
-        return torch.device("mps")
-    if key == "cuda" or key.startswith("cuda:"):
-        if not torch.cuda.is_available():
-            raise ValueError(
-                "device requests CUDA but CUDA is not available. Use device: cpu or mps (Apple Silicon)."
-            )
-        return torch.device(raw)
-    if key == "cpu":
-        return torch.device("cpu")
-    return torch.device(raw)
+def batch_predict(
+    model: CandleTransformer,
+    X_feat: np.ndarray,
+    X_tf: np.ndarray,
+    X_mask: np.ndarray,
+    device: torch.device,
+    *,
+    batch_size: int = 256,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run inference in batches; return (candle_preds, direction_probs) as numpy arrays."""
+    model.eval()
+    candle_parts: list[np.ndarray] = []
+    dir_parts: list[np.ndarray] = []
+    bs = max(1, int(batch_size))
+    with torch.no_grad():
+        for i in range(0, len(X_feat), bs):
+            xf = torch.from_numpy(X_feat[i : i + bs]).float().to(device)
+            xt = torch.from_numpy(X_tf[i : i + bs]).long().to(device)
+            xm = torch.from_numpy(X_mask[i : i + bs]).bool().to(device)
+            c_pred, d_logit = model(xf, xt, xm)
+            candle_parts.append(c_pred.cpu().numpy())
+            dir_parts.append(predict_direction_proba(d_logit).cpu().numpy())
+    return np.concatenate(candle_parts), np.concatenate(dir_parts)
