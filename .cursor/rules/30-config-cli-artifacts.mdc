@@ -1,0 +1,59 @@
+---
+description: YAML configs, CLI entrypoint, exit codes, and run artifacts
+globs:
+  - "configs/**/*.yaml"
+  - "src/stock_transformer/cli.py"
+  - "src/stock_transformer/backtest/**/*.py"
+alwaysApply: false
+---
+
+# Config, CLI, and artifacts
+
+## Config files
+
+- Primary: `configs/universe.yaml` (`experiment_mode: universe`). Reference: `configs/default.yaml` (single-symbol).
+- Full key table lives in `plan.md` (Config reference). Key contracts:
+  - `symbols`: ordered, uppercased at load, immutable per run.
+  - `target_symbol`: reporting key only, never gates coverage or training.
+  - `lookback >= 2`; `min_coverage_symbols` default is `max(2, len(symbols) - 1)`.
+  - `train_bars`, `val_bars`, `test_bars`, `step_bars` are **positions in the sample index**, not raw panel rows.
+  - `label_mode`: `raw_return` / `cross_sectional_return` today; `equal_weighted_return` and `sector_neutral_return` gated on M9b.
+  - `loss: mse|listnet|approx_ndcg` gated on M10; default `"mse"`.
+  - `data_source: rest|mcp` gated on M12; default `"rest"`.
+
+## Adding a config key
+
+1. Implement the behavior behind a default that **matches existing runs** (no silent changes).
+2. Document it in `plan.md` (Config reference) with the milestone tag.
+3. Add a test (`tests/test_run_artifacts.py` or similar) that asserts the key is honored.
+4. Update `config_snapshot.yaml` expectations if shape changes.
+
+## CLI (`stx-backtest`)
+
+- Entrypoint: `src/stock_transformer/cli.py::main`.
+- `-c/--config PATH` (default `configs/default.yaml`), `--synthetic` to force the synthetic path (no network).
+- **Current behavior:** always dispatches to `backtest/runner.py::run_from_config_path` regardless of `experiment_mode`.
+- **Target (M7b):** dispatch on `experiment_mode`:
+  - `"single_symbol"` or missing → `backtest/runner.py::run_from_config_path`.
+  - `"universe"` → `backtest/universe_runner.py::run_universe_from_config_path`.
+- **Exit codes (target, M7b):** `0` success, `1` missing/unreadable config, `2` partial failure (at least one fold raised) with `summary.json["error"]` populated.
+- **Success stdout:** exactly one line `Run complete. Artifacts: <run_dir>` (machine-parseable).
+
+If you touch the CLI, do not regress these contracts silently — add/adjust `tests/test_cli_dispatch.py` (landing in M7b).
+
+## Per-run artifacts
+
+Every run writes `artifacts/universe_run_<UTC-timestamp>/`:
+
+- `config_snapshot.yaml` — fully merged effective config.
+- `universe_membership.json` — per-symbol first/last valid row.
+- `feature_schema.json` — feature names, `N_UNIVERSE_FEATURES`, git SHA, `feature_schema_hash` (M7b).
+- `folds.json` — `fold_id → {train, val, test}` ranges and sample indices (M7b).
+- `summary.json` — aggregate + per-fold metrics, baselines, run metadata. **Written even on partial failure** once M7b lands.
+- `predictions_universe.csv` — long format per `plan.md` (Evaluation outputs) after M7b; currently wide.
+- `model_state_fold_<id>.pt` — optional, only when `save_models: true`.
+
+## Walk-forward
+
+- Lengths are sample-index positions (`WalkForwardConfig` dataclass in `backtest/walkforward.py`).
+- Runtime must call `assert_fold_chronology` per fold; do not bypass it.
