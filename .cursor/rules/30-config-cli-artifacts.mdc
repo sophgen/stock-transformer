@@ -32,6 +32,7 @@ alwaysApply: false
 
 - Entrypoint: `src/stock_transformer/cli.py::main`.
 - `-c/--config PATH` (default `configs/default.yaml`), `--synthetic` to force the synthetic path (no network).
+- `--device NAME` overrides YAML `device` and `STX_DEVICE` (`auto`, `mps`, `cpu`, `cuda`, `cuda:N`).
 - **Current behavior:** always dispatches to `backtest/runner.py::run_from_config_path` regardless of `experiment_mode`.
 - **Target (M7b):** dispatch on `experiment_mode`:
   - `"single_symbol"` or missing → `backtest/runner.py::run_from_config_path`.

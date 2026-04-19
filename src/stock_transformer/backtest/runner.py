@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -295,7 +296,19 @@ def run_experiment(
     return summary
 
 
-def run_from_config_path(path: str | Path, *, synthetic: bool = False) -> dict[str, Any]:
+def run_from_config_path(
+    path: str | Path,
+    *,
+    synthetic: bool = False,
+    device: str | None = None,
+) -> dict[str, Any]:
+    """Load YAML, apply device overrides (CLI > ``STX_DEVICE`` > file), validate, run."""
     cfg = load_config(path)
+    if device is not None and str(device).strip():
+        cfg["device"] = str(device).strip()
+    else:
+        env_dev = os.environ.get("STX_DEVICE", "").strip()
+        if env_dev:
+            cfg["device"] = env_dev
     cfg = coerce_experiment_config(cfg)
     return run_experiment_dispatch(cfg, use_synthetic=synthetic)

@@ -131,11 +131,32 @@ predict_direction_proba = predict_proba
 
 
 def resolve_device(name: str = "auto") -> torch.device:
-    """Pick best available accelerator.  ``auto`` → mps → cuda → cpu."""
-    if name == "auto":
+    """Map config/CLI device string to ``torch.device``.
+
+    ``auto`` prefers MPS (Apple Silicon) when built and available, then CUDA, else CPU.
+    Accepts ``cpu``, ``mps``, ``cuda``, ``cuda:N``, or any string ``torch.device`` understands.
+    """
+    raw = str(name).strip()
+    key = raw.lower()
+    if key == "auto":
         if torch.backends.mps.is_available():
             return torch.device("mps")
         if torch.cuda.is_available():
             return torch.device("cuda")
         return torch.device("cpu")
-    return torch.device(name)
+    if key == "mps":
+        if not torch.backends.mps.is_available():
+            raise ValueError(
+                "device is 'mps' but MPS is not available. "
+                "Use device: auto or cpu, or a PyTorch build with MPS support."
+            )
+        return torch.device("mps")
+    if key == "cuda" or key.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise ValueError(
+                "device requests CUDA but CUDA is not available. Use device: cpu or mps (Apple Silicon)."
+            )
+        return torch.device(raw)
+    if key == "cpu":
+        return torch.device("cpu")
+    return torch.device(raw)

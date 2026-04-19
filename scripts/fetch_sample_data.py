@@ -19,7 +19,10 @@ UNIVERSE: tuple[str, ...] = ("MSTR", "IBIT", "COIN", "QQQ")
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    p = argparse.ArgumentParser(description="Fetch daily-adjusted OHLCV for the universe into cache_dir.")
+    p = argparse.ArgumentParser(
+        description="Fetch daily-adjusted OHLCV for the universe into cache_dir.",
+        epilog="GPU/MPS applies to training only: use `stx-backtest --device mps` (this script has no --device).",
+    )
     p.add_argument("--cache-dir", default="data", help="Root for raw/ and canonical/ (default: data)")
     p.add_argument("--symbols", nargs="+", default=list(UNIVERSE), help=f"Symbols (default: {' '.join(UNIVERSE)})")
     p.add_argument(
