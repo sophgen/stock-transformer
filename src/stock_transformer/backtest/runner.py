@@ -321,9 +321,9 @@ def prepare_backtest_config(
 ) -> dict[str, Any]:
     """Load YAML, apply ``STX_*`` env overrides and optional CLI overrides, then Pydantic-coerce.
 
-    Precedence for overlapping keys: values from the file are merged first, then
-    non-empty ``STX_*`` env vars (:func:`~stock_transformer.backtest.env_config.apply_stx_env_overrides`),
-    then ``device`` / ``seed`` from this function's keyword arguments (CLI flags).
+    Merge order in code is **file → env → CLI kwargs**, so effective precedence for overlapping
+    keys is **CLI flags > environment > YAML > Pydantic defaults** (library callers pass
+    ``device``/``seed`` only when they intend to override the merged file+env dict).
     """
     cfg = load_config(path)
     apply_stx_env_overrides(cfg)
@@ -343,7 +343,11 @@ def run_from_config_path(
     dry_run: bool = False,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    """Load YAML, validate, and run (dispatches by ``experiment_mode`` — prefer CLI :func:`prepare_backtest_config`)."""
+    """Library entrypoint: load config from disk, then run single-symbol or universe pipeline.
+
+    Uses :func:`prepare_backtest_config` so ``device``/``seed`` match the ``stx backtest`` merge
+    rules; embedders should call this instead of duplicating load + env + coerce.
+    """
     cfg = prepare_backtest_config(path, device=device, seed=seed)
     mode = str(cfg.get("experiment_mode") or "single_symbol").lower()
     if mode == "universe":

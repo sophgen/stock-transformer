@@ -85,7 +85,7 @@ Global options (before the subcommand):
 
 During training, **`stx backtest`** prints per-fold and per-epoch lines on stderr (suppressed by `-q`). Hooks live in `backtest/progress.py` and are wired from the CLI.
 
-Subcommands:
+Subcommands (by theme: **experiments** — `backtest`, `sweep`; **configuration** — `config`; **data** — `fetch`; **meta** — `validate`, `version`):
 
 | Command | Purpose |
 |---------|---------|
@@ -105,7 +105,7 @@ Subcommands:
 | `--synthetic` | off | Use built-in synthetic data (no API). |
 | `--device` | (from env / YAML) | PyTorch device override: `auto`, `cpu`, `mps`, `cuda`, `cuda:N`. |
 | `--seed` | (from env / YAML) | Override `seed` for a quick reproducibility check. |
-| `--output-format` | `text` | `text` — one-line summary (and in `--dry-run`, sample/fold counts plus YAML fold boundaries on stdout); `json` — full summary dict on stdout. |
+| `-o`, `--output-format` | `text` | `text` — one-line summary (and in `--dry-run`, sample/fold counts plus YAML fold boundaries on stdout); `json` — full summary dict on stdout. |
 | `--dry-run` | off | Resolve data, write `folds.json` / `summary.json`, print fold plan to stdout in text mode, exit without training. |
 
 **Legacy:** `stx-backtest` is an alias for `stx backtest` (same flags).
@@ -133,7 +133,7 @@ Both take `-c/--config` (same default as `stx backtest`).
 |--------|---------|-------------|
 | `-c`, `--config` | `configs/universe.yaml` | Universe YAML. |
 | `--synthetic` | off | Synthetic universe data. |
-| `--output-format` | `text` | `text` — comparison table; `json` — merged sweep object. |
+| `-o`, `--output-format` | `text` | `text` — comparison table; `json` — merged sweep object. |
 
 ### Exit codes
 
@@ -180,7 +180,7 @@ uv run stx --help
 
 # Walk-forward backtest (synthetic; no API key)
 uv run stx backtest --synthetic
-uv run stx backtest --synthetic -c configs/universe.yaml --output-format json
+uv run stx backtest --synthetic -c configs/universe.yaml -o json
 
 # Effective config after merge + validation (stdout is YAML)
 uv run stx config show -c configs/default.yaml

@@ -35,7 +35,7 @@ from stock_transformer.cli.services import (
     validation_error_message,
 )
 from stock_transformer.cli.sigint import install_sigint_handler
-from stock_transformer.cli.validators import device_option, normalize_fetch_symbols
+from stock_transformer.cli.validators import cache_dir_option, device_option, normalize_fetch_symbols
 from stock_transformer.config_models import SingleSymbolExperimentConfig, UniverseExperimentConfig
 from stock_transformer.data.fetch_cmd import DEFAULT_UNIVERSE
 
@@ -52,6 +52,7 @@ def _exit(code: int, message: str | None = None) -> None:
 @click.group(
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
+    short_help="Walk-forward experiments, config tools, and data helpers.",
 )
 @click.option("-v", "--verbose", count=True, help="More log detail (-v INFO, -vv DEBUG).")
 @click.option("-q", "--quiet", is_flag=True, help="Only warnings and errors.")
@@ -120,6 +121,7 @@ def cli(
     help="Override YAML seed (after STX_SEED / file).",
 )
 @click.option(
+    "-o",
     "--output-format",
     type=click.Choice(["text", "json"], case_sensitive=False),
     default="text",
@@ -168,7 +170,9 @@ def backtest_cmd(
 @cli.command("fetch")
 @click.option(
     "--cache-dir",
-    default="data",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("data"),
+    callback=cache_dir_option,
     show_default=True,
     help="Root for raw/ and canonical/.",
 )
@@ -184,11 +188,11 @@ def backtest_cmd(
     help="Re-download and overwrite canonical CSV.",
 )
 @click.pass_context
-def fetch_cmd(ctx: click.Context, cache_dir: str, symbols: tuple[str, ...], refresh: bool) -> None:
+def fetch_cmd(ctx: click.Context, cache_dir: Path, symbols: tuple[str, ...], refresh: bool) -> None:
     """Fetch daily-adjusted OHLCV for symbols into the local cache."""
     syms = list(symbols) if symbols else list(DEFAULT_UNIVERSE)
     try:
-        run_fetch(cache_dir, syms, refresh=refresh)
+        run_fetch(str(cache_dir), syms, refresh=refresh)
     except KeyboardInterrupt:
         logger.warning("Fetch interrupted")
         _exit(130)
@@ -209,6 +213,7 @@ def fetch_cmd(ctx: click.Context, cache_dir: str, symbols: tuple[str, ...], refr
 )
 @click.option("--synthetic", is_flag=True, help="Use synthetic universe data.")
 @click.option(
+    "-o",
     "--output-format",
     type=click.Choice(["text", "json"], case_sensitive=False),
     default="text",
@@ -236,6 +241,7 @@ def sweep_cmd(ctx: click.Context, config_path: Path, synthetic: bool, output_for
     "config",
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
+    short_help="Inspect merged YAML after env + validation (effective config).",
 )
 @click.pass_context
 def config_group(ctx: click.Context) -> None:

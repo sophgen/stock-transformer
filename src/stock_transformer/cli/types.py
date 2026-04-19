@@ -1,4 +1,8 @@
-"""Small CLI-facing types shared between Click handlers and tooling."""
+"""Small CLI-facing types shared between Click handlers and tooling.
+
+These stay free of Click so tests and scripts can depend on stable dataclasses without
+importing argument parsers.
+"""
 
 from __future__ import annotations
 

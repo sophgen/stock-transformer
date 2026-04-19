@@ -1,7 +1,8 @@
 """Merge ``STX_*`` environment variables into raw YAML dicts before Pydantic coercion.
 
-Precedence is enforced in :func:`stock_transformer.backtest.runner.prepare_backtest_config`:
-CLI flags override these values, which override keys from the file.
+Applied after loading the YAML file and before CLI ``device``/``seed`` overrides in
+:func:`stock_transformer.backtest.runner.prepare_backtest_config`, so env wins over file
+but loses to explicit CLI/library kwargs.
 """
 
 from __future__ import annotations

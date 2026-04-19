@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -225,6 +226,21 @@ def test_backtest_json_output(monkeypatch, tmp_path):
     json.loads(r.stdout)
 
 
+def test_backtest_json_output_short_o_flag(monkeypatch, tmp_path):
+    """``-o`` is an alias for ``--output-format`` (POSIX-style short long pair)."""
+    import stock_transformer.cli as cli_mod
+
+    summary = {"run_dir": str(tmp_path / "r")}
+
+    monkeypatch.setattr(cli_mod, "run_experiment", lambda *_a, **_k: summary)
+    r = CliRunner().invoke(
+        cli_mod.cli,
+        ["backtest", "-c", str(REPO / "configs" / "default.yaml"), "--synthetic", "-o", "json"],
+    )
+    assert r.exit_code == 0
+    json.loads(r.stdout)
+
+
 def test_backtest_dry_run(monkeypatch, tmp_path):
     import stock_transformer.cli as cli_mod
 
@@ -354,6 +370,18 @@ def test_fetch_rejects_blank_symbol_after_strip():
         assert r.exit_code != 0
         out = (r.output + (r.stderr or "")).lower()
         assert "non-empty" in out
+
+
+def test_cache_dir_callback_rejects_whitespace_only_path():
+    """``cache_dir_option`` runs after Click's Path conversion; reject useless whitespace paths."""
+    import click as click_mod
+
+    from stock_transformer.cli.validators import cache_dir_option
+
+    ctx = click_mod.Context(click_mod.Command("fetch"))
+    param = click_mod.Option(["--cache-dir"])
+    with pytest.raises(click_mod.BadParameter):
+        cache_dir_option(ctx, param, Path("   "))
 
 
 def test_fetch_normalizes_symbols_to_uppercase(monkeypatch):

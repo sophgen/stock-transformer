@@ -6,6 +6,7 @@ Failing fast here keeps stack traces out of user-facing output and matches the
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import click
@@ -45,3 +46,14 @@ def normalize_fetch_symbols(ctx: click.Context, param: click.Parameter, value: A
             )
         out.append(s)
     return tuple(out)
+
+
+def cache_dir_option(ctx: click.Context, param: click.Parameter, value: Any) -> Path:
+    """Ensure ``--cache-dir`` is a usable directory path before any network or disk work."""
+    if value is None:
+        return Path("data")
+    p = value if isinstance(value, Path) else Path(str(value))
+    s = str(p).strip()
+    if not s:
+        raise click.BadParameter("cache-dir must not be empty (example: --cache-dir data).", ctx=ctx, param=param)
+    return Path(s)

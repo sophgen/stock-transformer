@@ -95,7 +95,8 @@ def fmt_metric_cell(x: Any) -> str:
     return "—" if x is None else f"{float(x):.3f}"
 
 
-def sweep_metrics_row(agg: dict[str, Any] | None) -> tuple[str, str, str]:
+def _sweep_metrics_row(agg: dict[str, Any] | None) -> tuple[str, str, str]:
+    """Format one sweep table row (internal helper for :func:`format_sweep_table`)."""
     if not agg:
         return ("—", "—", "—")
     sp = agg.get("spearman_mean_mean")
@@ -114,7 +115,7 @@ def format_sweep_table(merged: dict[str, Any]) -> str:
     for loss in ("mse", "listnet", "approx_ndcg"):
         block = by_loss.get(loss)
         agg = block.get("aggregate") if isinstance(block, dict) else None
-        sp, nd, hit = sweep_metrics_row(agg if isinstance(agg, dict) else None)
+        sp, nd, hit = _sweep_metrics_row(agg if isinstance(agg, dict) else None)
         lines.append(f"{loss:<12} | {sp:>10} | {nd:>8} | {hit:>8}")
     return "\n".join(lines)
 

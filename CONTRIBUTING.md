@@ -18,11 +18,13 @@ Alternatively, create a venv and `pip install -e ".[dev]"`.
 
 ## Configuration precedence
 
-For keys touched by both files and the environment, the merge order is documented in
-`prepare_backtest_config` in `src/stock_transformer/backtest/runner.py`: **YAML file →
-non-empty `STX_*` env vars → explicit `device` / `seed` from library or CLI**. In the
-`stx backtest` command, pass `--device` / `--seed` to override env and file without
-editing YAML.
+For keys touched by both files and the environment, `prepare_backtest_config` in
+`src/stock_transformer/backtest/runner.py` applies layers in this **code order**: load YAML,
+then `apply_stx_env_overrides`, then optional `device` / `seed` from the function arguments
+(what the CLI passes for `--device` / `--seed`). **Effective precedence** for overlapping
+keys is therefore **CLI flags > environment variables > YAML file > Pydantic defaults**
+in `config_models.py`. Pass `--device` / `--seed` on `stx backtest` to override env and file
+without editing YAML.
 
 ## Exit codes (CLI)
 
@@ -62,7 +64,7 @@ Library callers can use `prepare_backtest_config` plus `run_experiment` / `run_u
 
 - **Ruff** for lint + format; **mypy** with `disallow_untyped_defs` on `src/stock_transformer`.
 - Prefer **`logging`** in library modules; the CLI prints short summaries and tables.
-- **Click:** short and long flags (`-c`/`--config`), sensible defaults, `BadParameter` for fixable input mistakes before heavy work.
+- **Click:** short and long flags (`-c`/`--config`, `-o`/`--output-format` on `backtest` and `sweep`), sensible defaults, `BadParameter` for fixable input mistakes before heavy work.
 - **Signals:** long commands install a SIGINT handler that raises `KeyboardInterrupt` so we exit with **130** without dumping a traceback.
 - Avoid bare `except` without a comment; if you must catch broadly, state why (e.g. fold isolation).
 
