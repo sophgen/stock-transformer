@@ -4,6 +4,37 @@
 > Everything else in this document is the *target design*. When code and plan
 > disagree on a completed milestone, code wins and the plan is updated to match.
 
+## Architecture at a glance
+
+The project treats candles as tokens for a Transformer, but lifts the idea from
+a single ticker to a **panel of tickers** so the model has a contemporaneous
+peer set at every timestamp.
+
+- A **token** is one OHLCV bar for one `(symbol, timeframe)` at one timestamp,
+  encoded as log-returns relative to the prior bar close plus `log1p(volume)`.
+- A **sample** at prediction timestamp `t` is the full `[L, S, F]` block of
+  tokens: `L` timestamps of lookback × `S` symbols × `F` features, with a
+  boolean mask marking padding / invalid positions.
+- The model is a **temporal Transformer per symbol** (causal over `L`) followed
+  by a **cross-sectional Transformer over symbols** at the final step, emitting
+  one score per ticker per timestamp.
+- Training supervises those scores against **cross-sectional forward returns**
+  (`y[t, s] = close[t+1, s] / close[t, s] - 1`, optionally demeaned by the
+  live-peer nanmedian at `t`).
+- Evaluation is **ranking-first** (Spearman, NDCG@k, top-k hit rate) and
+  regression-secondary (MAE / RMSE). There is **no PnL simulation in v1**.
+
+Two prediction heads exist in the repo:
+
+| Head | Status | Purpose |
+|---|---|---|
+| `TransformerRanker` (universe, multi-ticker) | **v1 primary** | Predicts cross-sectional scores over `S` symbols at each `t`. |
+| `CandleTransformer` (single-symbol autoregressive, multi-timeframe tokens) | Reference / ablation | Predicts next-candle OHLCV log-returns + direction for one ticker. Kept for comparability; not on the critical path. |
+
+If a future ablation needs a per-ticker "up/down + magnitude" directional
+head, it plugs in alongside `CandleTransformer` without changing the universe
+pipeline (see [§Pilot](#pilot-small-universe-drill-down-for-mstr)).
+
 ## Scope and fixed decisions
 
 - **Prediction target:** next-period **cross-sectional ticker performance** over
@@ -39,6 +70,7 @@ Shared vocabulary. Any new module should use these terms exactly.
 | **Row / bar** | One aligned timestamp on the panel. |
 | **Sample** | One training example anchored at prediction timestamp `t`: a lookback window `[t-L+1 … t]` across the full universe. |
 | **Fold** | A contiguous `(train, val, test)` slice of the *sample index* produced by `WalkForwardConfig`. |
+| **Sample index** | The ordered sequence of prediction timestamps kept by `build_universe_samples` after `min_coverage_symbols` filtering. `N = len(sample_index)`. All `*_bars` / `step_bars` YAML keys count **positions in this index**, not raw panel rows. |
 | **Live** (at `t`, for `s`) | `isfinite(raw_return[t, s])` — i.e. both `close[t, s]` and `close[t+1, s]` are finite. |
 | **Coverage** (at `t`) | `sum_s live(t, s)`. A row is kept iff coverage ≥ `min_coverage_symbols`. |
 | **Canonical candle** | One OHLCV row in the uniform schema `timestamp, symbol, timeframe, open, high, low, close, volume`, regardless of whether it came from REST or MCP. |
@@ -83,6 +115,40 @@ Pin these once; every module honours them.
 - **Device:** `device: "auto"` prefers MPS on Apple Silicon, else CUDA, else
   CPU. Ops unsupported on MPS fall back to CPU with a single-line warning.
 
+## Invariants (cross-module contracts)
+
+Short checklist any new module must preserve. Each invariant has a test that
+covers it (test names in parentheses).
+
+1. **No future leakage in features.** Features for sample at `t` depend only
+   on panel rows `≤ t`. (`test_features_do_not_reference_future`, M7a)
+2. **Label indexing is `t → t+1`.** `y[t, s]` never reads `close[t+k, s]` for
+   `k ≥ 2`. (`test_label_uses_only_t_to_tplus1`, M7a)
+3. **Fold chronology.** For every fold `f`:
+   `max(ts[train_f]) < min(ts[val_f]) < min(ts[test_f])`.
+   (`test_fold_boundaries_monotonic`, M7a; already enforced at runtime by
+   `backtest/walkforward.py::assert_fold_chronology`)
+4. **Mask polarity is uniform.** Every tensor named `mask` or `padding_mask`
+   uses `True = padding / invalid`. Label validity is tracked separately as
+   `isfinite(y)`.
+5. **Symbol axis is immutable and deterministic.** Order comes from YAML,
+   uppercased at load, snapshotted to `universe_membership.json`; shuffling
+   YAML order and re-sorting outputs yields identical results.
+   (`test_deterministic_symbol_order`, M7a)
+6. **Coverage rule is a hard filter, not a soft weight.** A sample at `t` is
+   produced iff `sum_s isfinite(raw_return[t, s]) ≥ min_coverage_symbols`.
+   (`test_coverage_drop`, M7a)
+7. **`target_symbol` is reporting-only.** Drops / metrics for the target key
+   are emitted but never affect training-set construction.
+   (`test_target_symbol_not_required_live`, M7a)
+8. **Train-only normalisation.** Any scaler fits on train-fold statistics only
+   and applies frozen to val / test. (`test_train_scaling_fit_on_train_only`,
+   skipped until M9a)
+9. **Reproducibility.** Given a config + seed, `summary.json["aggregate"]` is
+   bit-stable on the same hardware device.
+10. **`summary.json` is always written**, even on partial failure (exit code
+    `2`).
+
 ## Config reference
 
 Authoritative list of YAML keys consumed by `configs/universe.yaml` (primary)
@@ -100,6 +166,7 @@ future milestone are tagged with the milestone id.
 | `lookback` | `int >= 2` | `32` | M3 | L in `[L, S, F]`. |
 | `min_coverage_symbols` | `int` | `max(2, len(symbols)-1)` | M3 | Drop `t` where `sum_s live(t, s) < this`. |
 | `label_mode` | `"cross_sectional_return"\|"raw_return"\|"equal_weighted_return"\|"sector_neutral_return"` | `"cross_sectional_return"` | M4 / M9b | Last two land in M9b. |
+| `bucket_q` | `float ∈ (0, 0.5)` | `0.33` | M4 | Top/bottom quantile fraction for `bucket_labels_by_quantile`; diagnostic-only in v1. |
 | `use_adjusted_daily` / `use_adjusted_weekly` / `use_adjusted_monthly` | `bool` | `true` | M2 | Select AV adjusted endpoint. |
 | `intraday_month` | `str \| null` | `null` | M2 | AV `month=YYYY-MM` slice for intraday. |
 | `intraday_extended_hours` | `bool` | `false` | M2 | Include pre/post-market bars. |
@@ -108,7 +175,7 @@ future milestone are tagged with the milestone id.
 | `cache_dir` | `str` | `"data"` | M2 | Root for raw + canonical caches. |
 | `store` | `"csv"\|"parquet"` | `"csv"` | M8 | Canonical storage backend. |
 | `data_source` | `"rest"\|"mcp"` | `"rest"` | M12 | Gate MCP path without breaking REST. |
-| `train_bars` / `val_bars` / `test_bars` / `step_bars` | `int` | — | M5 | `WalkForwardConfig` over the sample index. |
+| `train_bars` / `val_bars` / `test_bars` / `step_bars` | `int` | — | M5 | `WalkForwardConfig` lengths; **units are sample-index positions, not raw bars** (see [§Glossary](#glossary)). Name kept for backward compatibility with existing configs / tests. |
 | `d_model` / `nhead` / `num_temporal_layers` / `num_cross_layers` / `dim_feedforward` / `dropout` | numeric | — | M5 | `TransformerRanker` hyperparameters. |
 | `epochs` / `batch_size` / `learning_rate` | numeric | — | M5 | Optimiser. |
 | `loss` | `"mse"\|"listnet"\|"approx_ndcg"` | `"mse"` | M10 | Training loss ablation. |
@@ -134,10 +201,18 @@ future work; out of scope for M7).
 - Prefer a **continuous score target** for ranking, with optional
   bucketization for classification:
   - Regression target: future cross-sectional return (v1).
-  - Bucket target: top `q%`, middle bucket, bottom `q%` within the universe at
-    timestamp `t` (`labels/cross_sectional.py::bucket_labels_by_quantile`).
-- `label_mode` in YAML selects which target variant is used for loss and for
-  the primary ranking metric.
+  - Bucket target: three buckets within the universe at timestamp `t` via
+    `labels/cross_sectional.py::bucket_labels_by_quantile(values, q=bucket_q)`.
+    Encoding (per the implementation):
+    - `2` — top `bucket_q` fraction (best realized return).
+    - `1` — middle bucket.
+    - `0` — bottom `bucket_q` fraction.
+    - `NaN` — fewer than 3 finite peers at that row.
+
+    `bucket_q ∈ (0, 0.5)` (default `0.33`). Buckets are diagnostics only in
+    v1 — training loss operates on the continuous target.
+- `label_mode` in YAML selects which continuous target variant is used for
+  loss and for the primary ranking metric.
 
 ## Ticker universe
 
@@ -160,8 +235,13 @@ future work; out of scope for M7).
 
 ## Project scaffold
 
+**Current layout** (what exists on disk today, through M6a). Files added by
+later milestones are listed under "Planned additions" and in each milestone's
+**Files** section.
+
 ```
 src/stock_transformer/
+├── cli.py                     # stx-backtest entrypoint (single-symbol dispatch today)
 ├── data/
 │   ├── alphavantage.py        # REST client + per-symbol fetch + universe batch
 │   ├── canonicalize.py        # AV payload → canonical OHLCV schema
@@ -196,6 +276,19 @@ tests/
 ├── test_universe_tensor.py
 └── test_universe_runner_synthetic.py
 ```
+
+**Planned additions by milestone** (each milestone below is authoritative):
+
+| Milestone | Paths |
+|---|---|
+| M6b | `src/stock_transformer/features/tabular.py`, `src/stock_transformer/model/baselines_tabular.py`, `tests/test_baselines_tabular.py` |
+| M7a | `tests/test_leakage_universe.py` |
+| M7b | `tests/test_predictions_schema.py`, `tests/test_cli_dispatch.py`, `tests/test_run_artifacts.py`, `tests/golden/predictions_universe.csv` |
+| M8  | `src/stock_transformer/data/store.py`, `tests/test_candle_store.py`, `tests/test_membership_richer.py` |
+| M9a | `src/stock_transformer/features/cross_sectional.py`, `src/stock_transformer/features/scaling.py`, `tests/test_feature_schema_hash.py` |
+| M9b | `configs/sector_map.yaml`, `tests/test_sector_neutral_labels.py`, `tests/test_summary_per_sector.py` |
+| M10 | `src/stock_transformer/model/losses.py`, `scripts/sweep_loss.py`, `tests/test_ranking_losses.py` |
+| M12 | MCP client module + `tests/test_mcp_rest_parity.py`, `tests/fixtures/av_raw/*.json` |
 
 ## Alpha Vantage data plan
 
@@ -254,24 +347,50 @@ tests/
 
 ## Feature construction
 
+Two layers: **numeric features** (per `(t, s)` floats that enter the `[L, S, F]`
+tensor and are listed in the YAML `features` key from M9a onward) and **model
+components** (always-on identity signals inside the Transformer that are
+independent of the feature list).
+
+### Numeric features (tensor columns, counted by `F`)
+
 - **Per-ticker temporal features (implemented, v1):** OHLC log-returns vs
   previous close, `log1p(volume)`. `N_UNIVERSE_FEATURES = 5`.
-- **Planned additional temporal features (M9):**
+- **Planned additional temporal features (M9a):**
   - Realized log-return families at multiple horizons.
   - Rolling volatility.
   - Intraperiod range.
   - Volume change.
-- **Cross-sectional features (M9):** at each timestamp, per symbol —
+- **Cross-sectional features (M9a):** at each timestamp, per symbol —
   percentile rank of return / volume / volatility within the live universe;
   z-score vs the cross-section; relative strength vs equal-weighted universe;
   relative volume vs median.
-- **Static / slow metadata features (M9, when sector source lands):** sector,
-  industry, market-cap bucket.
-- **Ticker embedding:** included as one feature family; must not be the only
-  per-ticker identity signal so the model cannot reduce to
-  "single-ticker OHLCV + ticker ID".
-- Every feature schema change bumps `feature_schema_hash` in
-  `feature_schema.json` (see [§Per-run artifacts](#per-run-artifacts)).
+- **Static / slow metadata features (M9b, when sector source lands):** sector
+  one-hot, market-cap bucket one-hot. Industry is optional.
+
+### Model components (always on, not counted by `F`)
+
+- **Ticker embedding** (`nn.Embedding(n_symbols, d_model)` inside
+  `TransformerRanker.sym_embed`): injects per-symbol identity into the temporal
+  encoder. It is a **model component**, not a YAML-listed feature; it does not
+  contribute to `F` or to `feature_schema_hash`.
+- **Temporal positional embedding** (`nn.Embedding(max_seq_len, d_model)`):
+  same treatment — model-internal, not feature-listed.
+
+> **Guardrail:** numeric features must carry cross-sectional signal on their
+> own. The ticker embedding alone should not let the model reduce to
+> "single-ticker OHLCV + ticker ID"; the M9a cross-sectional features
+> (percentile rank, z-score, relative strength) are the explicit fix.
+
+### Schema hashing
+
+- `feature_schema_hash = sha256(json.dumps(feature_names, sort_keys=True))[:16]`
+  is computed over the **numeric feature list only** (not model components).
+- Landing in M7b: `features/universe_tensor.py::feature_schema() -> dict`
+  returns `{"features": [...], "n": F, "hash": "<16 hex>"}`; the runner stamps
+  this to `feature_schema.json` on every run.
+- Any change to the numeric feature list bumps the hash and invalidates cached
+  tensors.
 
 ## Walk-forward backtest protocol
 
@@ -282,14 +401,15 @@ tests/
   available at that fold's timestamps only.
 - For each fold:
   - Build train/val/test tensors from all eligible timestamps and symbols.
-  - Fit scaling / normalization on the **training cross-section only** (M9).
+  - Fit scaling / normalization on the **training cross-section only** (M9a).
   - Train the model to score the full universe at each timestamp.
-  - Tune thresholds / hyperparameters on validation only.
+  - Tune thresholds / hyperparameters on validation only (v1: early-stopping
+    by best val MSE; richer HP search is out of scope).
   - Freeze parameters and report test metrics.
 - Aggregate metrics across folds with mean / std and per-fold breakdowns.
 - Also report:
   - Per-ticker breakdowns.
-  - Per-sector breakdowns (M9).
+  - Per-sector breakdowns (M9b).
   - Metrics by universe size and coverage level.
 
 ```mermaid
@@ -338,27 +458,52 @@ flowchart LR
 ## Evaluation outputs (forecasting only)
 
 - **Primary ranking metrics** (per timestamp, averaged across folds):
-  - Spearman rank correlation of predicted scores vs realized next-period returns.
-  - Kendall rank correlation.
-  - Top-k hit rate.
-  - Precision@k / Recall@k for top-bucket prediction.
-  - NDCG@k.
+  - **Spearman** rank correlation of predicted scores vs realized next-period
+    returns. Skipped for rows where `isfinite(score) & isfinite(y)` has fewer
+    than `min_coverage_symbols` entries or where either side has zero variance.
+  - **Kendall** rank correlation (M7b; same filter as Spearman).
+  - **Top-k hit rate** — `|top_k(score) ∩ top_k(y_true_raw_return)| > 0` counted
+    per row over the finite subset; reported as a fraction of valid rows.
+    Ties broken by original index order (argsort stable).
+  - **Precision@k / Recall@k** for top-bucket prediction (where bucket label
+    is computed via `bucket_labels_by_quantile`).
+  - **NDCG@k** — relevance = `max(0, y_true_raw_return − min_live(y_true_raw_return))`
+    shifted to non-negative per row, DCG `= Σ rel_i / log2(i + 2)`, normalised
+    by the ideal DCG on the same row; returns `NaN` when ideal DCG is `0`.
 - **Secondary metrics:**
-  - Bucket classification accuracy (when bucket labels are used).
-  - Regression MAE / RMSE for relative return.
-  - Calibration diagnostics if scores are converted to probabilities.
+  - Bucket classification accuracy — computed iff `bucket_q` is set and scores
+    are bucketized via the same quantile rule; off by default in v1.
+  - Regression MAE / RMSE for relative return (via `masked_regression_metrics`).
+  - Calibration diagnostics if scores are converted to probabilities (future).
 - **Diagnostic breakdowns:**
   - Per-ticker.
-  - Per-sector (M9).
+  - Per-sector (M9b).
   - Per-timeframe.
   - Per-fold.
   - By market regime (future).
 - **Predictions table (`predictions_universe.csv`), long format** (M7b):
-  columns `timestamp, symbol, timeframe, y_true_raw_return,
-  y_true_relative_return, y_score, y_rank_pred, y_rank_true, fold_id`.
-  Ranks are computed per `(fold_id, timestamp)` over the finite subset of
-  `y_score` (resp. `y_true_*`) using `scipy.stats.rankdata(method="average")`,
-  **descending** (higher value → rank `1`). NaN score/truth → NaN rank.
+  - Columns and dtypes:
+    - `timestamp` — ISO 8601, UTC-naive, same format as the panel index
+      (`2024-01-02` for daily; `2024-01-02T13:30:00` for intraday).
+    - `symbol` — uppercase string.
+    - `timeframe` — lowercase string matching the YAML `timeframe`.
+    - `y_true_raw_return` — float, `raw_return(i, t)`; `NaN` when the forward
+      return is undefined (missing `close[t, s]` or `close[t+1, s]`).
+    - `y_true_relative_return` — float, `raw_return` minus the live-peer
+      nanmedian at `t`; `NaN` iff `y_true_raw_return` is `NaN`.
+    - `y_score` — float, model score for `(t, s)`; `NaN` where the padding
+      mask is set at the last step (`mask[:, -1, :] == True`).
+    - `y_rank_pred` — integer-valued float; rank of `y_score` within
+      `(fold_id, timestamp)` over the **finite subset** of `y_score`.
+    - `y_rank_true` — integer-valued float; rank of
+      **`y_true_raw_return`** within `(fold_id, timestamp)` over the finite
+      subset. (Because per-row median demeaning preserves ranks, ranking by
+      `y_true_relative_return` is identical; we pick raw for provenance.)
+    - `fold_id` — integer from `WalkForwardConfig`.
+  - Rank rule: `scipy.stats.rankdata(method="average")`, **descending** (higher
+    value → rank `1`). NaN in the source value → NaN in the rank.
+  - Row ordering: `(fold_id ASC, timestamp ASC, symbol ASC)`; the symbol order
+    within a timestamp is the YAML order.
 
   Example (3 symbols, 1 timestamp, fold 0):
 
@@ -369,8 +514,10 @@ flowchart LR
   2024-01-02,COIN,daily,-0.011,-0.024,-0.006,3,3,0
   ```
 
-  *(The current runner writes a wide variant; M7b migrates to this long schema
-  and keeps a golden-file test comparing against a frozen fixture.)*
+  *(The current runner writes a wide variant `y_true_relative_<SYM>` /
+  `y_true_raw_<SYM>` / `y_score_<SYM>` with one row per `(fold_id, timestamp)`;
+  M7b migrates to this long schema and keeps a golden-file test comparing
+  against a frozen fixture at `tests/golden/predictions_universe.csv`.)*
 
 ## Guardrails and tests
 
@@ -438,6 +585,9 @@ alignment.
 - Python ≥ 3.11 *(target; `pyproject.toml` currently pins `>=3.10`. M6b bumps it.)*
 - PyTorch ≥ 2.2, numpy ≥ 1.26, pandas ≥ 2.2, pyyaml ≥ 6 *(target; M6b bumps pins
   in `pyproject.toml` from the current 2.0 / 1.24 / 2.0 / 6.0).*
+- scipy ≥ 1.11 (required for `scipy.stats.rankdata` used in the predictions
+  long schema; add alongside the M7b migration if not already pulled in
+  transitively by scikit-learn).
 - M6b adds scikit-learn ≥ 1.4 and lightgbm ≥ 4.3 (pinned in `pyproject.toml`).
 - M8 adds pyarrow ≥ 15.
 - Apple Silicon: `device: "auto"` prefers MPS; ops unsupported on MPS fall
@@ -445,6 +595,13 @@ alignment.
 - **No network calls in tests.** Live Alpha Vantage requests are gated behind
   `ALPHAVANTAGE_API_KEY`; the client raises at construction time if the env
   var is missing and the config is not `--synthetic`.
+- **Known limitation (synthetic):** `data.synthetic.synthetic_universe_candles`
+  always emits a business-day index regardless of the `timeframe` argument.
+  Tests that exercise intraday timeframes must either use `daily` for the
+  synthetic fixture or extend the helper to honour `timeframe`. The `timeframe`
+  column on the returned frame is set correctly and downstream code does not
+  parse the index cadence, so this does not affect correctness for daily-only
+  flows. Tracked for a follow-up alongside M9a feature work.
 
 ## Per-run artifacts
 
@@ -562,6 +719,8 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
       `feature_schema() -> dict` returning `{"features": [...], "n": N_UNIVERSE_FEATURES, "hash": <sha256>}`.
     - `cli.py` (edit): dispatch on `experiment_mode`; exit `2` on fold exception
       with partial `summary.json` still written; keep the one-line success print.
+    - `pyproject.toml` (edit): add `scipy>=1.11` to `dependencies` (used for
+      `scipy.stats.rankdata` in the long schema).
   - **Config keys:** `save_models` (bool, default `false`).
   - **Tests:**
     - `tests/test_predictions_schema.py`: golden-file comparison against
@@ -662,8 +821,15 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
       def listnet_loss(pred: Tensor, target: Tensor, *, mask: Tensor) -> Tensor: ...
       def approx_ndcg_loss(pred: Tensor, target: Tensor, *, mask: Tensor, alpha: float = 10.0) -> Tensor: ...
       ```
-      All operate on `pred/target: [N, S]` and a label mask
-      (`isfinite(target) & ~padded`). `listnet_loss` uses softmax over valid entries.
+      All operate on `pred/target: [N, S]` and a label mask (**`True = valid`**:
+      `isfinite(target) & ~padded_last_step`). `listnet_loss` applies softmax
+      over the valid subset per row (masked positions filled with `-inf` before
+      softmax). `approx_ndcg_loss` uses the smoothed rank surrogate with
+      temperature `alpha`. **Edge cases:**
+      - Row with fewer than 2 valid entries → contributes `0` to the loss and
+        is excluded from the denominator (so gradients from that row are zero).
+      - If **all** rows in the batch are degenerate, each loss returns
+        `torch.tensor(0.0, device=pred.device, dtype=pred.dtype, requires_grad=True)`.
     - `backtest/universe_runner.py` (edit): dispatch via `loss` config; move the
       inline `_masked_mse` into `model/losses.py`.
   - **Config keys:** `loss: mse|listnet|approx_ndcg` (default `"mse"`).
@@ -687,9 +853,15 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 - [ ] **M12 — (Optional) MCP AlphaVantage path.**
   - Parallel branch for schema discovery via `TOOL_LIST` / `TOOL_GET` / `TOOL_CALL`.
-  - Canonical candle schema must be byte-identical to the REST path
-    (`tests/test_mcp_rest_parity.py` — same seed, same symbols, same timeframe → equal panels).
+  - **Parity test scope (`tests/test_mcp_rest_parity.py`):** the parity target
+    is the **canonicalizer**, not the upstream data. The test feeds a single
+    frozen raw payload (checked in under `tests/fixtures/av_raw/`) through
+    both the REST canonicalizer (`canonicalize_series` / `canonicalize_intraday`)
+    and the MCP canonicalizer, and asserts the resulting canonical DataFrames
+    are byte-identical (same dtypes, same row order, same `timestamp` values).
+    It does **not** make live calls to either path.
   - Gated behind `data_source: rest|mcp` in YAML; default remains `"rest"`.
+  - No MCP code before M11 is otherwise complete.
 
 ## Pilot: small-universe drill-down for `MSTR`
 
