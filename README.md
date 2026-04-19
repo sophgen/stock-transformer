@@ -66,8 +66,12 @@ uv run stx-backtest --synthetic -c configs/universe.yaml
 
 ## Live data via Alpha Vantage
 
+Put your API key in a **`.env`** file at the repo root (copy from [`.env.example`](.env.example)):
+`ALPHAVANTAGE_API_KEY=your_key_here`. The CLI and `scripts/fetch_sample_data.py` load it
+automatically via [python-dotenv](https://pypi.org/project/python-dotenv/). Alternatively,
+`export ALPHAVANTAGE_API_KEY=...` in your shell.
+
 ```bash
-export ALPHAVANTAGE_API_KEY=your_key_here
 uv run stx-backtest -c configs/default.yaml
 uv run stx-backtest -c configs/universe.yaml
 ```
@@ -76,6 +80,23 @@ The client fetches candles per timeframe, respects throttling, caches raw JSON,
 and writes canonical data under `cache_dir` (CSV and optional **partitioned**
 `csv` / `parquet` store when `store` is set in universe config). Universe mode
 fetches every symbol in the YAML list.
+
+### Quick end-to-end with real sample data
+
+Download the pilot universe (MSTR, IBIT, COIN, QQQ) daily-adjusted bars once
+(~1 minute with Alpha Vantage throttling), then run the universe backtest
+fully offline using the partitioned cache:
+
+```bash
+# After setting ALPHAVANTAGE_API_KEY in .env (or exporting it):
+uv run python scripts/fetch_sample_data.py
+uv run stx-backtest -c configs/sample.yaml
+# Artifacts: artifacts/universe_run_<UTC-timestamp>/
+```
+
+`configs/sample.yaml` uses a smaller model and fewer epochs than `configs/universe.yaml`
+for a fast smoke run; adjust as needed. Raw JSON and canonical CSV live under
+`data/` (`data/raw/`, `data/canonical/`, etc.) — these directories are gitignored.
 
 ## CLI
 
@@ -92,6 +113,7 @@ Exit codes: **0** success, **1** missing/unreadable config, **2** partial failur
 |------|---------|
 | `configs/default.yaml` | Single-symbol multi-timeframe next-candle prediction |
 | `configs/universe.yaml` | Multi-ticker universe, cross-sectional labels, ranker |
+| `configs/sample.yaml` | Same universe, smaller model/folds; use after `scripts/fetch_sample_data.py` |
 
 YAML is validated with **Pydantic**; omitted keys get defaults aligned with these
 files (so small config snippets in tests still work).
