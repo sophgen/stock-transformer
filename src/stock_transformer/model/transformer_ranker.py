@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -113,3 +114,23 @@ class TransformerRanker(nn.Module):
         z = self.norm(z)
         scores = self.score_head(z).squeeze(-1)
         return scores
+
+
+def batch_predict(
+    model: TransformerRanker,
+    X: np.ndarray,
+    mask: np.ndarray,
+    device: torch.device,
+    *,
+    batch_size: int = 128,
+) -> np.ndarray:
+    """Batch inference for cross-sectional scores ``[N, L, S]`` → ``[N, S]``."""
+    model.eval()
+    parts: list[np.ndarray] = []
+    bs = max(1, int(batch_size))
+    with torch.no_grad():
+        for i in range(0, len(X), bs):
+            xf = torch.from_numpy(X[i : i + bs]).float().to(device)
+            mk = torch.from_numpy(mask[i : i + bs]).bool().to(device)
+            parts.append(model(xf, mk).cpu().numpy())
+    return np.concatenate(parts, axis=0)

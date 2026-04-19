@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from stock_transformer.config_models import coerce_experiment_config
 from stock_transformer.config_validate import (
     validate_single_symbol_config,
     validate_universe_config,
@@ -49,3 +52,19 @@ def test_single_symbol_requires_symbol_and_timeframes():
         )
     with pytest.raises(ValueError, match="timeframes"):
         validate_single_symbol_config({"symbol": "X", "train_bars": 1, "val_bars": 1, "test_bars": 1, "step_bars": 1})
+
+
+def test_unknown_key_warns(caplog):
+    """Typo keys in YAML should log a warning (not fail silently)."""
+    caplog.set_level(logging.WARNING)
+    raw = {
+        "symbol": "X",
+        "timeframes": ["daily"],
+        "train_bars": 10,
+        "val_bars": 5,
+        "test_bars": 5,
+        "step_bars": 5,
+        "epcohs": 20,
+    }
+    coerce_experiment_config(raw)
+    assert "Unknown config key" in caplog.text

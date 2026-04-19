@@ -1,3 +1,4 @@
+from stock_transformer.device import resolve_device
 from stock_transformer.model.baselines import (
     moving_average_baseline,
     persistence_baseline,
@@ -8,7 +9,6 @@ from stock_transformer.model.transformer_classifier import (
     CandleTransformerClassifier,
     predict_direction_proba,
     predict_proba,
-    resolve_device,
 )
 from stock_transformer.model.transformer_ranker import TransformerRanker
 

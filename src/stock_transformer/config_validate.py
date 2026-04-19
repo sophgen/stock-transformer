@@ -21,6 +21,15 @@ def _validation_to_value_error(exc: ValidationError) -> ValueError:
     return ValueError("; ".join(parts))
 
 
+def format_validation_error(exc: ValidationError, *, path_hint: str = "config") -> str:
+    """Human-readable multi-line message for CLI users (bullet list)."""
+    lines = [f"Error: invalid configuration ({path_hint})"]
+    for e in exc.errors():
+        loc = ".".join(str(x) for x in e["loc"]) or "(root)"
+        lines.append(f"  • {loc}: {e['msg']}")
+    return "\n".join(lines)
+
+
 def validate_experiment_config(cfg: dict[str, Any] | None) -> None:
     """Raise ``ValueError`` if the config is unusable for the declared ``experiment_mode``."""
     if cfg is None or not isinstance(cfg, dict):

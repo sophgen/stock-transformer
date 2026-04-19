@@ -18,6 +18,14 @@ from sklearn.metrics import (
 )
 
 
+def safe_nanmean(a: np.ndarray) -> float:
+    """Mean of finite values; NaN if all values are non-finite."""
+    a = np.asarray(a, dtype=np.float64)
+    if not np.any(np.isfinite(a)):
+        return float("nan")
+    return float(np.nanmean(a))
+
+
 def classification_metrics(
     y_true: np.ndarray,
     y_prob: np.ndarray,
