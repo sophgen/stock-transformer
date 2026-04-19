@@ -28,17 +28,15 @@ alwaysApply: false
 3. Add a test (`tests/test_run_artifacts.py` or similar) that asserts the key is honored.
 4. Update `config_snapshot.yaml` expectations if shape changes.
 
-## CLI (`stx-backtest`)
+## CLI (`stx`)
 
 - Entrypoint: `src/stock_transformer/cli.py::main`.
-- `-c/--config PATH` (default `configs/default.yaml`), `--synthetic` to force the synthetic path (no network).
+- `-c/--config PATH` (default `configs/default.yaml` or `$STX_CONFIG`), `--synthetic` to force the synthetic path (no network).
 - `--device NAME` overrides YAML `device` and `STX_DEVICE` (`auto`, `mps`, `cpu`, `cuda`, `cuda:N`).
-- **Current behavior:** always dispatches to `backtest/runner.py::run_from_config_path` regardless of `experiment_mode`.
-- **Target (M7b):** dispatch on `experiment_mode`:
-  - `"single_symbol"` or missing → `backtest/runner.py::run_from_config_path`.
-  - `"universe"` → `backtest/universe_runner.py::run_universe_from_config_path`.
-- **Exit codes (target, M7b):** `0` success, `1` missing/unreadable config, `2` partial failure (at least one fold raised) with `summary.json["error"]` populated.
-- **Success stdout:** exactly one line `Run complete. Artifacts: <run_dir>` (machine-parseable).
+- **Dispatch (M7b):** `stx backtest` loads YAML via `prepare_backtest_config`, then calls `run_experiment` (single-symbol) or `run_universe_experiment` (universe) according to `experiment_mode`. Helpers `run_from_config_path` / `run_single_symbol_from_config_path` / `run_universe_from_config_path` wrap the same merge step for library use.
+- `--output-format text|json`, `--dry-run`, `--seed`, `stx config show|diff`, global `--log-file`, and expanded `STX_*` vars — see `README.md`.
+- **Exit codes:** `0` success, `1` missing/unreadable config / validation error, `2` partial failure (e.g. fold errors) or `no_folds`, `130` SIGINT.
+- **Default success stdout (text):** one line `Run complete. Artifacts: <run_dir>` (use `--output-format json` for the full summary dict).
 
 If you touch the CLI, do not regress these contracts silently — add/adjust `tests/test_cli_dispatch.py` (landing in M7b).
 

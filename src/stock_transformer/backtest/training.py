@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from stock_transformer.backtest.progress import NullProgress, ProgressCallback
 from stock_transformer.model.losses import training_loss
 from stock_transformer.model.transformer_classifier import CandleTransformer
 from stock_transformer.model.transformer_ranker import TransformerRanker
@@ -42,8 +43,11 @@ def _run_supervised_epochs(
     train_epoch: Callable[[], float],
     val_loss: Callable[[], float],
     log_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+    progress_fold_id: int = 0,
 ) -> TModule:
     """Optimizer-driven epoch loop with plateau scheduling, early stopping, and CSV logging."""
+    prog = progress if progress is not None else NullProgress()
     patience = int(cfg.get("early_stopping_patience", 0))
     best_state = None
     best_val = float("inf")
@@ -82,6 +86,12 @@ def _run_supervised_epochs(
             break
 
         logger.debug("epoch %s train=%.6f val=%.6f", epoch, train_loss_mean, vloss)
+        prog.on_epoch_end(
+            progress_fold_id,
+            epoch,
+            epochs,
+            {"train_loss": train_loss_mean, "val_loss": vloss, "lr": lr_now},
+        )
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -104,6 +114,8 @@ def train_candle_transformer(
     device: torch.device,
     *,
     log_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+    progress_fold_id: int = 0,
 ) -> CandleTransformer:
     """Train with optional early stopping, LR reduction on plateau, and CSV logging."""
     torch.manual_seed(int(cfg.get("seed", 42)))
@@ -172,6 +184,8 @@ def train_candle_transformer(
         train_epoch=train_epoch,
         val_loss=val_loss_fn,
         log_path=log_path,
+        progress=progress,
+        progress_fold_id=progress_fold_id,
     )
 
 
@@ -188,6 +202,8 @@ def train_transformer_ranker(
     loss_name: str,
     *,
     log_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+    progress_fold_id: int = 0,
 ) -> TransformerRanker:
     """Train the universe ranker with the chosen ranking loss."""
     torch.manual_seed(int(cfg.get("seed", 42)))
@@ -215,7 +231,7 @@ def train_transformer_ranker(
         else None
     )
 
-    def to_t(a: np.ndarray, dtype=torch.float32) -> torch.Tensor:
+    def to_t(a: np.ndarray, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         return torch.from_numpy(a).to(dtype).to(device)
 
     xm_tr, mk_tr, yt_tr = to_t(X), to_t(mask, torch.bool), to_t(y)
@@ -257,4 +273,6 @@ def train_transformer_ranker(
         train_epoch=train_epoch,
         val_loss=val_loss_fn,
         log_path=log_path,
+        progress=progress,
+        progress_fold_id=progress_fold_id,
     )

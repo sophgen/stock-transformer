@@ -58,12 +58,19 @@ Global options (before the subcommand):
 | `-v` | INFO logging. |
 | `-vv` | DEBUG logging. |
 | `-q`, `--quiet` | Warnings and errors only. |
+| `--log-file` | Append logs to a file (in addition to stderr). |
+| `--no-color` | Disable styled output (or set `NO_COLOR`). |
+| `--rich` | Use Rich for fold/epoch progress lines on stderr when the `rich` package is installed (dev env includes it). |
+
+During training, **`stx backtest`** prints per-fold and per-epoch lines on stderr (suppressed by `-q`). Hooks live in `backtest/progress.py` and are wired from the CLI.
 
 Subcommands:
 
 | Command | Purpose |
 |---------|---------|
 | `stx backtest` | Run walk-forward experiment from YAML (single-symbol or universe). |
+| `stx config show` | Print merged, validated config as YAML (`-c` path). |
+| `stx config diff` | Print keys that differ from Pydantic defaults for that mode. |
 | `stx fetch` | Download daily-adjusted OHLCV for the default pilot universe into `cache_dir`. |
 | `stx sweep` | Run universe experiment for each ranking loss and merge `by_loss` (see `backtest/loss_sweep.py`). |
 | `stx validate` | Load and validate YAML only (no training). Useful in CI. |
@@ -73,11 +80,23 @@ Subcommands:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-c`, `--config` | `configs/default.yaml` | Experiment YAML path. |
+| `-c`, `--config` | `configs/default.yaml` or `$STX_CONFIG` | Experiment YAML path. |
 | `--synthetic` | off | Use built-in synthetic data (no API). |
 | `--device` | (from env / YAML) | PyTorch device override: `auto`, `cpu`, `mps`, `cuda`, `cuda:N`. |
+| `--seed` | (from env / YAML) | Override `seed` for a quick reproducibility check. |
+| `--output-format` | `text` | `text` — one-line summary (and in `--dry-run`, sample/fold counts plus YAML fold boundaries on stdout); `json` — full summary dict on stdout. |
+| `--dry-run` | off | Resolve data, write `folds.json` / `summary.json`, print fold plan to stdout in text mode, exit without training. |
 
 **Legacy:** `stx-backtest` is an alias for `stx backtest` (same flags).
+
+### `stx config`
+
+| Subcommand | Purpose |
+|------------|---------|
+| `stx config show` | Merged effective config (after env + validation) as YAML. |
+| `stx config diff` | Keys whose values differ from Pydantic defaults for that mode. |
+
+Both take `-c/--config` (same default as `stx backtest`).
 
 ### `stx fetch`
 
@@ -93,6 +112,7 @@ Subcommands:
 |--------|---------|-------------|
 | `-c`, `--config` | `configs/universe.yaml` | Universe YAML. |
 | `--synthetic` | off | Synthetic universe data. |
+| `--output-format` | `text` | `text` — comparison table; `json` — merged sweep object. |
 
 ### Exit codes
 
@@ -107,8 +127,8 @@ Subcommands:
 
 For keys supported by both file and environment:
 
-1. **CLI flags** (e.g. `stx backtest --device cpu`)
-2. **Environment variables** `STX_DEVICE`, `STX_CACHE_DIR`, `STX_ARTIFACTS_DIR`, `STX_EPOCHS`
+1. **CLI flags** (e.g. `stx backtest --device cpu --seed 99`)
+2. **Environment variables** — `STX_DEVICE`, `STX_CACHE_DIR`, `STX_ARTIFACTS_DIR`, `STX_EPOCHS`, `STX_SEED`, `STX_BATCH_SIZE`, `STX_LOG_LEVEL` (used when `-v`/`-q` are not set), and `STX_CONFIG` (default path for `-c` when you omit it)
 3. **YAML** values
 4. **Pydantic defaults** in `config_models.py`
 
@@ -130,16 +150,35 @@ uv run stx fetch --cache-dir data --symbols MSTR --symbols QQQ
 uv run stx sweep --synthetic -c configs/universe.yaml
 ```
 
-## Shell completion (bash)
+## Shell completion (bash, zsh, fish)
 
-Generate completion script (requires Click):
+Generate a completion script (requires the `stx` command on your `PATH` or `uv run stx`):
 
 ```bash
 _STX_COMPLETE=bash_source stx > ~/.stx-complete.bash
 echo 'source ~/.stx-complete.bash' >> ~/.bashrc
 ```
 
-A short note lives in `completions/stx.bash`.
+Committed scripts for reference: `completions/stx.bash`, `completions/stx.zsh`, `completions/stx.fish` (regenerate with the same pattern using `zsh_source` or `fish_source`).
+
+## Man pages (`man/stx.1`)
+
+Regenerate from the installed Click app (dev dependency `click-man`):
+
+```bash
+make man
+# optional drift check (same as CI):
+make man-check
+```
+
+## Docker
+
+Build a self-contained image (PyTorch and dependencies are installed by `pip`; image is large):
+
+```bash
+docker build -t stock-transformer .
+docker run --rm stock-transformer --help
+```
 
 ## Troubleshooting
 
@@ -172,20 +211,20 @@ uv run ruff format --check .
 uv run mypy src/stock_transformer
 ```
 
-CI runs Ruff, mypy, and pytest on Python **3.11** and **3.12**. A release workflow (`.github/workflows/release.yml`) builds and can publish on `v*` tags when `PYPI_API_TOKEN` is configured.
+CI runs Ruff, **mypy** (with `disallow_untyped_defs`), pytest with **≥80%** coverage, **`make man-check`**, on Python **3.11** and **3.12** (Ubuntu), plus a **macOS** smoke job for the CLI. **Dependabot** is configured for GitHub Actions and pip (`.github/dependabot.yml`). A release workflow (`.github/workflows/release.yml`) builds and can publish on `v*` tags when `PYPI_API_TOKEN` is configured.
 
 ## Project structure
 
 ```text
 src/stock_transformer/
-├── cli.py                 # stx entrypoint (Click)
+├── cli.py                 # stx entrypoint (Click); progress + StxResult
 ├── device.py              # resolve_device (no torch.nn imports)
 ├── config_models.py       # Pydantic
 ├── config_validate.py
 ├── data/                  # Alpha Vantage, alignment, cache, fetch helpers
 ├── features/              # Sequences, universe tensor
 ├── model/                 # Transformers, baselines, losses
-└── backtest/              # Walk-forward, metrics, training, runners, artifacts
+└── backtest/              # Walk-forward, metrics, training, ProgressCallback, runners, artifacts
 ```
 
 ## Contributing

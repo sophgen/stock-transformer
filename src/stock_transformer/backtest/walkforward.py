@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ def generate_folds(n_windows: int, cfg: WalkForwardConfig) -> list[FoldSlices]:
     return folds
 
 
-def assert_fold_chronology(end_timestamps, fold: FoldSlices) -> None:
+def assert_fold_chronology(end_timestamps: Any, fold: FoldSlices) -> None:
     """Enforce max(train) < min(val) < min(test) on window end times."""
     import pandas as pd
 

@@ -17,9 +17,8 @@ Alternatively, create a venv and `pip install -e ".[dev]"`.
 ## Architecture (high level)
 
 ```text
-stx (cli.py)  →  run_from_config_path / validate / fetch / sweep
-                      ↓
-              run_experiment_dispatch
+stx (cli.py)  →  prepare_backtest_config → run_experiment | run_universe_experiment
+                 validate / config show|diff / fetch / sweep
                       ↓
          single-symbol runner          universe_runner
                       ↓                       ↓
@@ -28,8 +27,10 @@ stx (cli.py)  →  run_from_config_path / validate / fetch / sweep
               artifacts (summary.json, CSV, logs)
 ```
 
+Library callers can use `prepare_backtest_config` plus `run_experiment` / `run_universe_experiment`, or the wrappers `run_from_config_path`, `run_single_symbol_from_config_path`, and `run_universe_from_config_path` exported from `stock_transformer.backtest`.
+
 - **CLI** (`src/stock_transformer/cli.py`) parses arguments, configures logging, and catches validation errors with readable messages. It should not embed training logic.
-- **Runners** (`backtest/runner.py`, `backtest/universe_runner.py`) orchestrate data, folds, training, and metrics; they call shared helpers (`backtest/artifacts.py`, `backtest/context.py`, `device.py`).
+- **Runners** (`backtest/runner.py`, `backtest/universe_runner.py`) orchestrate data, folds, training, and metrics; optional `ProgressCallback` (`backtest/progress.py`) feeds CLI stderr lines; shared helpers (`backtest/artifacts.py`, `backtest/context.py`, `device.py`).
 - **Models** (`model/`) implement `nn.Module` code only; device resolution lives in `device.py`, batched inference in `batch_predict` helpers.
 
 ## Adding a model or loss

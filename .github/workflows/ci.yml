@@ -30,4 +30,18 @@ jobs:
       - name: Mypy
         run: uv run mypy src/stock_transformer
       - name: Pytest
-        run: uv run pytest -q --cov=stock_transformer --cov-report=term-missing
+        run: uv run pytest -q --cov=stock_transformer --cov-report=term-missing --cov-fail-under=80
+      - name: Man page matches click-man output
+        run: make man-check
+
+  smoke-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --extra dev
+      - name: CLI smoke (offline mocks + subprocess helpers)
+        run: uv run pytest -q tests/test_cli_dispatch.py

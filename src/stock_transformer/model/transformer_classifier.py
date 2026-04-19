@@ -11,6 +11,7 @@ past tokens, and the last-token representation feeds:
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
 import numpy as np
 import torch
@@ -114,7 +115,7 @@ class CandleTransformerClassifier(CandleTransformer):
     for removal once external callers migrate (see CHANGELOG).
     """
 
-    def __init__(self, n_features: int, **kwargs) -> None:
+    def __init__(self, n_features: int, **kwargs: Any) -> None:
         warnings.warn(
             "CandleTransformerClassifier is deprecated; use CandleTransformer.",
             DeprecationWarning,
