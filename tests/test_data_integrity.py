@@ -1,7 +1,5 @@
 """Canonical data key uniqueness."""
 
-import pandas as pd
-
 from stock_transformer.data.synthetic import synthetic_random_walk_candles
 
 

@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import uuid
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 import yaml
 from scipy.stats import rankdata
 
@@ -30,8 +26,15 @@ from stock_transformer.backtest.portfolio_sim import (
     aggregate_portfolio_sim_folds,
     simulate_topk_portfolio,
 )
+from stock_transformer.backtest.run_helpers import (
+    allocate_run_dir,
+    append_fold_error_log,
+    fold_error_record,
+    git_head_short,
+)
+from stock_transformer.backtest.training import train_transformer_ranker
 from stock_transformer.backtest.walkforward import WalkForwardConfig, assert_fold_chronology, generate_folds
-from stock_transformer.config_validate import validate_universe_config
+from stock_transformer.config_models import coerce_universe_config
 from stock_transformer.data.align import align_universe_ohlcv
 from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_universe
 from stock_transformer.data.synthetic import synthetic_universe_candles
@@ -58,7 +61,6 @@ from stock_transformer.model.baselines_tabular import (
     fit_linear_cs_ranker,
     scatter_predictions,
 )
-from stock_transformer.model.losses import training_loss
 from stock_transformer.model.transformer_classifier import resolve_device
 from stock_transformer.model.transformer_ranker import TransformerRanker
 
@@ -68,21 +70,6 @@ def _safe_nanmean(a: np.ndarray) -> float:
     if not np.any(np.isfinite(a)):
         return float("nan")
     return float(np.nanmean(a))
-
-
-def _git_head_short(cwd: Path | None = None) -> str:
-    try:
-        return (
-            subprocess.check_output(
-                ["git", "rev-parse", "HEAD"],
-                cwd=cwd or Path(__file__).resolve().parents[2],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            .strip()[:40]
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        return ""
 
 
 def _ranks_descending_matrix(vals: np.ndarray) -> np.ndarray:
@@ -95,78 +82,6 @@ def _ranks_descending_matrix(vals: np.ndarray) -> np.ndarray:
         if m.any():
             out[i, m] = rankdata(-row[m], method="average")
     return out
-
-
-def _train_ranker(
-    X: np.ndarray,
-    mask: np.ndarray,
-    y: np.ndarray,
-    X_va: np.ndarray,
-    mask_va: np.ndarray,
-    y_va: np.ndarray,
-    cfg: dict[str, Any],
-    n_symbols: int,
-    device: torch.device,
-    loss_name: str,
-    n_features: int,
-) -> TransformerRanker:
-    torch.manual_seed(int(cfg.get("seed", 42)))
-    np.random.seed(int(cfg.get("seed", 42)))
-    model = TransformerRanker(
-        n_features=n_features,
-        n_symbols=n_symbols,
-        d_model=int(cfg["d_model"]),
-        nhead=int(cfg["nhead"]),
-        num_temporal_layers=int(cfg.get("num_temporal_layers", 2)),
-        num_cross_layers=int(cfg.get("num_cross_layers", 1)),
-        dim_feedforward=int(cfg["dim_feedforward"]),
-        dropout=float(cfg["dropout"]),
-        max_seq_len=int(X.shape[1]) + 8,
-    ).to(device)
-
-    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg["learning_rate"]), weight_decay=1e-4)
-    bs = int(cfg["batch_size"])
-    epochs = int(cfg["epochs"])
-    gen = torch.Generator()
-    gen.manual_seed(int(cfg.get("seed", 42)))
-
-    def to_t(a: np.ndarray, dtype=torch.float32) -> torch.Tensor:
-        return torch.from_numpy(a).to(dtype).to(device)
-
-    xm_tr, mk_tr, yt_tr = to_t(X), to_t(mask, torch.bool), to_t(y)
-    xm_va, mk_va, yt_va = to_t(X_va), to_t(mask_va, torch.bool), to_t(y_va)
-
-    n = xm_tr.size(0)
-    best_state = None
-    best_val = float("inf")
-    pad_last_tr = mk_tr[:, -1, :]
-    pad_last_va = mk_va[:, -1, :]
-
-    for _ in range(epochs):
-        model.train()
-        perm = torch.randperm(n, generator=gen).to(device)
-        for i in range(0, n, bs):
-            idx = perm[i : i + bs]
-            opt.zero_grad()
-            pred = model(xm_tr[idx], mk_tr[idx])
-            label_ok = torch.isfinite(yt_tr[idx]) & (~pad_last_tr[idx])
-            loss = training_loss(loss_name, pred, yt_tr[idx], mask_valid=label_ok)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-
-        model.eval()
-        with torch.no_grad():
-            pv = model(xm_va, mk_va)
-            label_ok_va = torch.isfinite(yt_va) & (~pad_last_va)
-            vloss = float(training_loss(loss_name, pv, yt_va, mask_valid=label_ok_va))
-        if vloss < best_val:
-            best_val = vloss
-            best_state = deepcopy(model.state_dict())
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model
 
 
 def _predict_ranker(
@@ -191,22 +106,17 @@ def run_universe_experiment(
     *,
     use_synthetic: bool = False,
 ) -> dict[str, Any]:
-    validate_universe_config(config)
+    config = coerce_universe_config(config)
     u = load_universe_config_from_dict(config)
-    device = resolve_device(config.get("device", "auto"))
-    cache_dir = Path(config.get("cache_dir", "data"))
-    art = Path(config.get("artifacts_dir", "artifacts"))
-    art.mkdir(parents=True, exist_ok=True)
-    ts_part = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M%S")
-    run_dir = art / f"universe_run_{ts_part}_{uuid.uuid4().hex[:8]}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    device = resolve_device(str(config.get("device", "auto")))
+    cache_dir = Path(str(config.get("cache_dir", "data")))
+    art = Path(str(config.get("artifacts_dir", "artifacts")))
+    run_dir = allocate_run_dir(art, "universe_run")
     (run_dir / "config_snapshot.yaml").write_text(yaml.dump(config, sort_keys=True))
 
-    feature_names: tuple[str, ...] = tuple(
-        config.get("features") or list(DEFAULT_UNIVERSE_FEATURE_NAMES)
-    )
+    feature_names: tuple[str, ...] = tuple(config.get("features") or list(DEFAULT_UNIVERSE_FEATURE_NAMES))
     fs = feature_schema(feature_names)
-    fs_out = {**fs, "git_sha": _git_head_short()}
+    fs_out = {**fs, "git_sha": git_head_short()}
     (run_dir / "feature_schema.json").write_text(json.dumps(fs_out, indent=2))
 
     symbols = u.symbols
@@ -242,13 +152,14 @@ def run_universe_experiment(
     sectors_arr = sectors_for_symbols(symbols, sector_map, default_sector)
 
     if u.label_mode == "sector_neutral_return" and not sm_path:
-        summary = {"error": "sector_map_path required for sector_neutral_return", "run_dir": str(run_dir)}
-        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-        return summary
+        err_out: dict[str, Any] = {
+            "error": "sector_map_path required for sector_neutral_return",
+            "run_dir": str(run_dir),
+        }
+        (run_dir / "summary.json").write_text(json.dumps(err_out, indent=2, default=str))
+        return err_out
 
-    sectors_for_labels: np.ndarray | None = (
-        sectors_arr if u.label_mode == "sector_neutral_return" else None
-    )
+    sectors_for_labels: np.ndarray | None = sectors_arr if u.label_mode == "sector_neutral_return" else None
 
     if use_synthetic:
         candles = synthetic_universe_candles(
@@ -334,7 +245,7 @@ def run_universe_experiment(
         "run_dir": str(run_dir),
         "loss": loss_name,
         "feature_schema_hash": fs["hash"],
-        "git_sha": _git_head_short(),
+        "git_sha": git_head_short(),
     }
 
     if not folds:
@@ -363,18 +274,30 @@ def run_universe_experiment(
             X_va = scaler.transform(X[sl_va])
             X_te = scaler.transform(X[sl_te])
 
-            model = _train_ranker(
+            model = TransformerRanker(
+                n_features=int(X.shape[-1]),
+                n_symbols=len(symbols),
+                d_model=int(config["d_model"]),
+                nhead=int(config["nhead"]),
+                num_temporal_layers=int(config.get("num_temporal_layers", 2)),
+                num_cross_layers=int(config.get("num_cross_layers", 1)),
+                dim_feedforward=int(config["dim_feedforward"]),
+                dropout=float(config["dropout"]),
+                max_seq_len=int(X_tr.shape[1]) + 8,
+            ).to(device)
+            log_path = run_dir / f"training_log_fold_{fold.fold_id}.csv"
+            model = train_transformer_ranker(
                 X_tr,
                 mask[sl_tr],
                 y[sl_tr],
                 X_va,
                 mask[sl_va],
                 y[sl_va],
+                model,
                 config,
-                len(symbols),
                 device,
                 loss_name,
-                n_features=X.shape[-1],
+                log_path=log_path,
             )
 
             if bool(config.get("save_models", False)):
@@ -404,9 +327,7 @@ def run_universe_experiment(
             mrev = mean_reversion_rank_scores(close, end_rows=end_row[sl_te], lookback=lookback)
             eq = equal_score_baseline(len(y_te), len(symbols))
             row["baseline_momentum_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(mom, y_te))
-            row["baseline_mean_reversion_spearman_mean"] = _safe_nanmean(
-                spearman_per_timestamp(mrev, y_te)
-            )
+            row["baseline_mean_reversion_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(mrev, y_te))
             row["baseline_equal_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(eq, y_te))
 
             Xf_tr, yf_tr, gid_tr, _sid_tr = flatten_universe_sample(X[sl_tr], mask[sl_tr], y[sl_tr])
@@ -416,26 +337,16 @@ def run_universe_experiment(
                 gbt = fit_gbt_ranker(Xf_tr, yf_tr, gid_tr)
                 plin = lin.predict(Xf_te.astype(np.float64, copy=False))
                 pgbt = gbt.predict(Xf_te)
-                s_lin = scatter_predictions(
-                    plin, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols)
-                )
-                s_gbt = scatter_predictions(
-                    pgbt, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols)
-                )
-                row["baseline_linear_spearman_mean"] = _safe_nanmean(
-                    spearman_per_timestamp(s_lin, y_te)
-                )
-                row["baseline_gbt_spearman_mean"] = _safe_nanmean(
-                    spearman_per_timestamp(s_gbt, y_te)
-                )
+                s_lin = scatter_predictions(plin, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols))
+                s_gbt = scatter_predictions(pgbt, gid_te, sid_te, n_samples=len(y_te), n_symbols=len(symbols))
+                row["baseline_linear_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(s_lin, y_te))
+                row["baseline_gbt_spearman_mean"] = _safe_nanmean(spearman_per_timestamp(s_gbt, y_te))
             else:
                 row["baseline_linear_spearman_mean"] = float("nan")
                 row["baseline_gbt_spearman_mean"] = float("nan")
 
             fold_rows.append(row)
-            per_fold_sector.append(
-                per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2)
-            )
+            per_fold_sector.append(per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2))
 
             pad_te = mask[sl_te][:, -1, :]
             if psim_enabled:
@@ -486,7 +397,9 @@ def run_universe_experiment(
                         }
                     )
         except Exception as exc:  # noqa: BLE001
-            fold_errors.append({"fold_id": fold.fold_id, "error": str(exc)})
+            rec = fold_error_record(fold.fold_id, exc)
+            append_fold_error_log(run_dir, rec)
+            fold_errors.append(rec)
             continue
 
     summary["folds"] = fold_rows
@@ -556,9 +469,7 @@ def load_universe_config_from_dict(config: dict[str, Any]) -> UniverseConfig:
         target_symbol=tgt,
         timeframe=str(config.get("timeframe", "daily")).lower(),
         lookback=int(config.get("lookback", 32)),
-        min_coverage_symbols=int(
-            config.get("min_coverage_symbols", max(2, len(symbols) - 1) if symbols else 2)
-        ),
+        min_coverage_symbols=int(config.get("min_coverage_symbols", max(2, len(symbols) - 1) if symbols else 2)),
         label_mode=lm,
         raw=config,
     )

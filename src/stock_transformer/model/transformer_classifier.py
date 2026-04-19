@@ -15,7 +15,6 @@ import torch.nn as nn
 
 
 class CandleTransformer(nn.Module):
-
     def __init__(
         self,
         n_candle_features: int = 5,
@@ -44,9 +43,7 @@ class CandleTransformer(nn.Module):
             activation="gelu",
         )
         try:
-            self.encoder = nn.TransformerEncoder(
-                layer, num_layers=num_layers, enable_nested_tensor=False
-            )
+            self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers, enable_nested_tensor=False)
         except TypeError:
             self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
 
@@ -86,9 +83,7 @@ class CandleTransformer(nn.Module):
         h = h + self.pos_embed(positions)
         h = self.input_drop(h)
 
-        causal = nn.Transformer.generate_square_subsequent_mask(
-            S, device=h.device, dtype=h.dtype
-        )
+        causal = nn.Transformer.generate_square_subsequent_mask(S, device=h.device, dtype=h.dtype)
         pad = padding_mask.to(dtype=h.dtype) * torch.finfo(h.dtype).min if padding_mask is not None else None
         h = self.encoder(h, mask=causal, src_key_padding_mask=pad)
 
@@ -107,6 +102,7 @@ class CandleTransformer(nn.Module):
 # ---------------------------------------------------------------------------
 # Backward-compat aliases so older imports keep working
 # ---------------------------------------------------------------------------
+
 
 class CandleTransformerClassifier(CandleTransformer):
     """Legacy wrapper — delegates to :class:`CandleTransformer`."""

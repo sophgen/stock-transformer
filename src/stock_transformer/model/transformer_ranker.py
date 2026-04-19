@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn as nn
 
@@ -51,9 +53,7 @@ class TransformerRanker(nn.Module):
             activation="gelu",
         )
         try:
-            self.cross_enc = nn.TransformerEncoder(
-                c_layer, num_layers=num_cross_layers, enable_nested_tensor=False
-            )
+            self.cross_enc = nn.TransformerEncoder(c_layer, num_layers=num_cross_layers, enable_nested_tensor=False)
         except TypeError:
             self.cross_enc = nn.TransformerEncoder(c_layer, num_layers=num_cross_layers)
 
@@ -93,7 +93,8 @@ class TransformerRanker(nn.Module):
 
         h = h.permute(0, 2, 1, 3).reshape(B * S, L, self.d_model)
         pm = padding_mask.permute(0, 2, 1).reshape(B * S, L)
-        causal = self._causal_attn_mask[:L, :L].to(device=x.device, dtype=h.dtype)
+        causal_buf = cast(torch.Tensor, self._causal_attn_mask)
+        causal = causal_buf[:L, :L].to(device=x.device, dtype=h.dtype)
         # Float padding mask matches ``causal`` dtype (PyTorch warns on bool+float mix).
         pad_attn = pm.to(dtype=h.dtype) * torch.finfo(h.dtype).min
         h = self.temporal_enc(h, mask=causal, src_key_padding_mask=pad_attn)

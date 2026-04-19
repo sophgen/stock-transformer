@@ -104,7 +104,7 @@ def test_fold_boundaries_monotonic(universe_panel):
 def test_pit_universe_membership(universe_panel):
     panel, close, symbols = universe_panel
     panel2 = panel.copy()
-    panel2.loc[0:99, [f"open__IBIT", f"high__IBIT", f"low__IBIT", f"close__IBIT", f"volume__IBIT"]] = np.nan
+    panel2.loc[0:99, ["open__IBIT", "high__IBIT", "low__IBIT", "close__IBIT", "volume__IBIT"]] = np.nan
     close2 = panel2[[f"close__{s}" for s in symbols]].to_numpy(dtype=np.float64)
     _, mask, _, _, _, end_row_pit = build_universe_samples(
         panel2,
@@ -125,9 +125,7 @@ def test_coverage_drop(universe_panel):
     panel2 = panel.copy()
     mid = slice(len(panel2) // 3, 2 * len(panel2) // 3)
     for sym in symbols[2:]:
-        panel2.loc[mid, [f"open__{sym}", f"high__{sym}", f"low__{sym}", f"close__{sym}", f"volume__{sym}"]] = (
-            np.nan
-        )
+        panel2.loc[mid, [f"open__{sym}", f"high__{sym}", f"low__{sym}", f"close__{sym}", f"volume__{sym}"]] = np.nan
     close2 = panel2[[f"close__{s}" for s in symbols]].to_numpy(dtype=np.float64)
     X_hi, *_ = build_universe_samples(
         panel2,
@@ -197,7 +195,7 @@ def test_train_scaling_fit_on_train_only(universe_panel):
 def test_target_symbol_not_required_live(universe_panel):
     panel, close, symbols = universe_panel
     panel2 = panel.copy()
-    panel2.loc[200:250, [f"open__MSTR", f"high__MSTR", f"low__MSTR", f"close__MSTR", f"volume__MSTR"]] = np.nan
+    panel2.loc[200:250, ["open__MSTR", "high__MSTR", "low__MSTR", "close__MSTR", "volume__MSTR"]] = np.nan
     close2 = panel2[[f"close__{s}" for s in symbols]].to_numpy(dtype=np.float64)
     _, _, y, *_ = build_universe_samples(
         panel2,

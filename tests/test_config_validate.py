@@ -44,6 +44,8 @@ def test_universe_rejects_bad_min_coverage():
 
 def test_single_symbol_requires_symbol_and_timeframes():
     with pytest.raises(ValueError, match="symbol"):
-        validate_single_symbol_config({"timeframes": ["daily"], "train_bars": 1, "val_bars": 1, "test_bars": 1, "step_bars": 1})
+        validate_single_symbol_config(
+            {"timeframes": ["daily"], "train_bars": 1, "val_bars": 1, "test_bars": 1, "step_bars": 1}
+        )
     with pytest.raises(ValueError, match="timeframes"):
         validate_single_symbol_config({"symbol": "X", "train_bars": 1, "val_bars": 1, "test_bars": 1, "step_bars": 1})

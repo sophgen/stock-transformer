@@ -65,13 +65,7 @@ def _base_candle_features(panel: pd.DataFrame, symbols: tuple[str, ...]) -> tupl
     )
     pc = prev_close
     ok = (
-        np.isfinite(o)
-        & np.isfinite(h)
-        & np.isfinite(lo)
-        & np.isfinite(c)
-        & np.isfinite(v)
-        & np.isfinite(pc)
-        & (pc > 0)
+        np.isfinite(o) & np.isfinite(h) & np.isfinite(lo) & np.isfinite(c) & np.isfinite(v) & np.isfinite(pc) & (pc > 0)
     )
     ok[0, :] = False
     safe = np.where(pc == 0, eps, pc)
@@ -106,7 +100,9 @@ def build_row_feature_tensor(
         raise ValueError(f"Unknown feature names: {unknown}")
 
     base_stack, base_ok = _base_candle_features(panel, symbols)
-    base_map = {DEFAULT_UNIVERSE_FEATURE_NAMES[i]: base_stack[..., i] for i in range(len(DEFAULT_UNIVERSE_FEATURE_NAMES))}
+    base_map = {
+        DEFAULT_UNIVERSE_FEATURE_NAMES[i]: base_stack[..., i] for i in range(len(DEFAULT_UNIVERSE_FEATURE_NAMES))
+    }
 
     vol = _volume_matrix(panel, symbols)
     tr = cs.trailing_simple_returns(close)

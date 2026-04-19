@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-import pandas as pd
-from scipy.stats import kendalltau
+from scipy.stats import kendalltau, rankdata
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
@@ -107,7 +106,11 @@ def spearman_per_timestamp(
         ss, yy = s[m], y[m]
         if np.nanstd(ss) < 1e-12 or np.nanstd(yy) < 1e-12:
             continue
-        out[i] = float(pd.Series(ss).corr(pd.Series(yy), method="spearman"))
+        rs = rankdata(ss, method="average")
+        ry = rankdata(yy, method="average")
+        rs = (rs - rs.mean()) / (rs.std(ddof=0) + 1e-30)
+        ry = (ry - ry.mean()) / (ry.std(ddof=0) + 1e-30)
+        out[i] = float((rs * ry).mean())
     return out
 
 
