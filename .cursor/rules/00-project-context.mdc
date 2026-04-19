@@ -1,0 +1,42 @@
+---
+description: Stock Transformer mission, architecture, and how plan.md relates to code
+alwaysApply: true
+---
+
+# Stock Transformer — project context
+
+## What this repo does
+
+Cross-sectional ranking over a **universe of tickers**. Each sample is a panel `[L, S, F]` (lookback × symbols × features) at prediction time `t`; target is the move from `t → t+1`. **v1 is forecast evaluation only** — Spearman, NDCG@k, top-k hit rate, MAE/RMSE. **No PnL / portfolio / sizing** code in v1.
+
+## Primary vs reference paths
+
+- **Primary (use by default):** `TransformerRanker` + `backtest/universe_runner.py` + `configs/universe.yaml`.
+- **Reference / ablation:** `CandleTransformer` + `backtest/runner.py` + `configs/default.yaml` — single-symbol autoregressive head; keep working, do **not** build new features on it.
+
+## Authoritative docs
+
+- `plan.md` holds the target design, glossary, and **milestone tracker** (the tracker is the source of truth for done vs planned).
+- **Code wins on completed milestones.** If `plan.md` disagrees with shipped code on a checked-off milestone, update the plan — do not rewrite working code to match stale prose.
+- Do not claim a milestone is done unless its DoD (files, tests, commands, artifacts) is satisfied.
+
+## Vocabulary (use these exact terms)
+
+- **Panel:** outer-joined OHLCV across symbols on one global timestamp index; columns are `{field}__{symbol}` (e.g., `close__MSTR`).
+- **Sample:** one training example at `t` with lookback `[t−L+1 … t]` over the full universe.
+- **Sample index:** prediction timestamps kept after `min_coverage_symbols` filtering. YAML `*_bars` / `step_bars` count **positions in this index**, not raw panel rows.
+- **Live (at `t, s`):** `isfinite(raw_return[t, s])` — both `close[t,s]` and `close[t+1,s]` finite.
+- **`target_symbol`:** reporting/drill-down key **only** — it never gates training, coverage, or loss.
+
+## Scope guardrails (do not add without explicit ask)
+
+- **No PnL / portfolio simulation / position sizing / transaction costs** — that is M11 and gated.
+- **No MCP data path** outside M12 — default `data_source` is `rest`.
+- **No new single-symbol features** on the reference path — put new work on the universe path.
+- **No network calls in tests** (see `20-testing-and-data.mdc`).
+
+## Agent behavior
+
+- Extend existing modules (`features/universe_tensor.py`, `labels/cross_sectional.py`, `backtest/universe_runner.py`, `model/transformer_ranker.py`) before adding new ones.
+- Keep `plan.md` in sync when you ship: tick the milestone box, update the "Planned additions" table if paths changed, and reflect new config keys in the Config reference table.
+- When unsure about an unfinished area, read `plan.md` for the **Definition of Done** block for that milestone and follow it literally.

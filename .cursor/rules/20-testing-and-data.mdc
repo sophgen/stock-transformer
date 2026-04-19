@@ -1,0 +1,49 @@
+---
+description: Test constraints — no network, synthetic data, leakage tests
+globs:
+  - "tests/**/*.py"
+  - "src/stock_transformer/data/synthetic.py"
+alwaysApply: false
+---
+
+# Testing and data hygiene
+
+## No network in tests
+
+- Tests must not call Alpha Vantage, MCP, or any live API. Use `data.synthetic.synthetic_universe_candles` / checked-in fixtures only.
+- `AlphaVantageClient` raises at construction if `ALPHAVANTAGE_API_KEY` is missing; unit tests must not depend on that env var.
+- Do **not** add `requests_mock` / VCR cassettes that encode live responses — use the frozen payloads under `tests/fixtures/av_raw/` when that path lands (M12).
+
+## Canonical synthetic fixture
+
+- Standard universe for leakage tests: `("MSTR", "IBIT", "COIN", "QQQ")`, `n_bars=400`, `timeframe="daily"`, `seed=7`, aligned via `data.align.align_universe_ohlcv`.
+- `synthetic_universe_candles` returns a **business-day index regardless of `timeframe`**. For intraday assertions either use `daily` or extend the helper — don't assume the index cadence matches the `timeframe` column.
+
+## Leakage / universe test matrix
+
+Live in `tests/test_leakage_universe.py` (M7a). Required assertions:
+
+| Test | Assertion |
+|---|---|
+| `test_features_do_not_reference_future` | Scramble panel rows `> t`; rebuild; `X` bit-identical. |
+| `test_label_uses_only_t_to_tplus1` | Perturb `close[t+2]`; `y[t]` unchanged. |
+| `test_fold_boundaries_monotonic` | `max(ts[train]) < min(ts[val]) < min(ts[test])` per fold. |
+| `test_pit_universe_membership` | Symbol absent before `t=100` → `mask[:, :, sym]` all True there. |
+| `test_coverage_drop` | Row with `live.sum() < min_coverage_symbols` is absent from samples. |
+| `test_deterministic_symbol_order` | Shuffle YAML symbols; results identical after re-sort. |
+| `test_target_symbol_not_required_live` | `target_symbol` masked → peers finite, target NaN; row kept. |
+| `test_train_scaling_fit_on_train_only` | (M9a) Scaler stats depend only on train slice. Skipped until M9a. |
+
+If you add a new feature or label, add a test that would catch **future leakage** and **wrong mask polarity**, not just a snapshot of outputs.
+
+## Running tests
+
+- Full suite: `pytest -v`.
+- Single file: `pytest tests/test_universe_tensor.py -v`.
+- Never run `pytest -x` to paper over failures; fix the root cause.
+
+## Things to avoid
+
+- `@pytest.mark.skip` without a `reason=` pointing at a milestone (e.g. `"awaits M9a"`).
+- Non-deterministic tests: always pass explicit `seed=` to synthetic helpers and `torch.manual_seed` where model code runs.
+- Writing outside `tmp_path` / the test's run dir.
