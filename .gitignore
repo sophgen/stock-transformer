@@ -209,4 +209,5 @@ __marimo__/
 # Local market data cache
 data/raw/
 data/processed/
+data/canonical/
 artifacts/

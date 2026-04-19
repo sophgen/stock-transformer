@@ -6,11 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from stock_transformer.backtest.runner import run_from_config_path
 
 
 def main(argv: list[str] | None = None) -> int:
     """Dispatch is implemented in ``run_from_config_path`` → ``run_experiment_dispatch`` (universe vs single-symbol)."""
+    load_dotenv()
     p = argparse.ArgumentParser(
         description="Stock transformer walk-forward forecast evaluation "
         "(single-symbol multi-timeframe or universe mode via experiment_mode in YAML)"
