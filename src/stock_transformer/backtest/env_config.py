@@ -1,6 +1,6 @@
 """Merge ``STX_*`` environment variables into raw YAML dicts before Pydantic coercion.
 
-Precedence is enforced in :func:`stock_transformer.backtest.runner.run_from_config_path`:
+Precedence is enforced in :func:`stock_transformer.backtest.runner.prepare_backtest_config`:
 CLI flags override these values, which override keys from the file.
 """
 
@@ -15,7 +15,11 @@ _ENV_OVERRIDES: dict[str, str] = {
     "STX_CACHE_DIR": "cache_dir",
     "STX_ARTIFACTS_DIR": "artifacts_dir",
     "STX_EPOCHS": "epochs",
+    "STX_SEED": "seed",
+    "STX_BATCH_SIZE": "batch_size",
 }
+
+_INT_KEYS = frozenset({"epochs", "seed", "batch_size"})
 
 
 def apply_stx_env_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -24,7 +28,7 @@ def apply_stx_env_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
         v = os.environ.get(env_key, "").strip()
         if not v:
             continue
-        if yaml_key == "epochs":
+        if yaml_key in _INT_KEYS:
             cfg[yaml_key] = int(v)
         else:
             cfg[yaml_key] = v

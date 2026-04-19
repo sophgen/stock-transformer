@@ -18,6 +18,7 @@ from stock_transformer.backtest.metrics import (
     classification_metrics,
     regression_metrics,
 )
+from stock_transformer.backtest.progress import ProgressCallback
 from stock_transformer.backtest.run_helpers import allocate_run_dir, append_fold_error_log, fold_error_record
 from stock_transformer.backtest.training import train_candle_transformer
 from stock_transformer.backtest.walkforward import (
@@ -56,24 +57,13 @@ def tune_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     return best_t
 
 
-def run_experiment_dispatch(
-    config: dict[str, Any],
-    *,
-    use_synthetic: bool = False,
-) -> dict[str, Any]:
-    """Load-free dispatch: universe vs single-symbol experiment."""
-    if str(config.get("experiment_mode", "single_symbol")).lower() == "universe":
-        from stock_transformer.backtest.universe_runner import run_universe_experiment
-
-        return run_universe_experiment(config, use_synthetic=use_synthetic)
-    return run_experiment(config, use_synthetic=use_synthetic)
-
-
 def run_experiment(
     config: dict[str, Any],
     *,
     use_synthetic: bool = False,
     skip_fetch: bool = False,
+    dry_run: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run multi-timeframe walk-forward experiment; write artifacts (single-symbol mode only)."""
     config = coerce_single_symbol_config(config)
@@ -163,6 +153,34 @@ def run_experiment(
         ctx.finalize()
         return ctx.summary
 
+    if dry_run:
+        folds_payload: dict[str, Any] = {}
+        for fold in folds:
+            folds_payload[str(fold.fold_id)] = {
+                "train": {
+                    "i_start": fold.train.start,
+                    "i_end": fold.train.stop - 1,
+                    "timestamp_start": str(ts_pred.iloc[fold.train.start]),
+                    "timestamp_end": str(ts_pred.iloc[fold.train.stop - 1]),
+                },
+                "val": {
+                    "i_start": fold.val.start,
+                    "i_end": fold.val.stop - 1,
+                    "timestamp_start": str(ts_pred.iloc[fold.val.start]),
+                    "timestamp_end": str(ts_pred.iloc[fold.val.stop - 1]),
+                },
+                "test": {
+                    "i_start": fold.test.start,
+                    "i_end": fold.test.stop - 1,
+                    "timestamp_start": str(ts_pred.iloc[fold.test.start]),
+                    "timestamp_end": str(ts_pred.iloc[fold.test.stop - 1]),
+                },
+            }
+        ctx.summary["dry_run"] = True
+        ctx.summary["fold_plan"] = folds_payload
+        ctx.finalize()
+        return ctx.summary
+
     fold_rows: list[dict[str, Any]] = []
     all_preds: list[pd.DataFrame] = []
     fold_errors: list[dict[str, Any]] = []
@@ -172,6 +190,8 @@ def run_experiment(
             try:
                 assert_fold_chronology(ts_pred, fold)
                 logger.info("Fold %s: train/val/test slices", fold.fold_id)
+                if progress is not None:
+                    progress.on_fold_start(fold.fold_id, len(folds))
 
                 sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
 
@@ -202,6 +222,8 @@ def run_experiment(
                     config,
                     device,
                     log_path=log_path,
+                    progress=progress,
+                    progress_fold_id=fold.fold_id,
                 )
 
                 candle_va, prob_va = batch_predict(
@@ -219,6 +241,8 @@ def run_experiment(
                 row.update({f"test_cls_{k}": v for k, v in m_cls.items()})
                 row.update({f"test_reg_{k}": v for k, v in m_reg.items()})
                 fold_rows.append(row)
+                if progress is not None:
+                    progress.on_fold_end(fold.fold_id, row)
 
                 pred_df = pd.DataFrame(
                     {
@@ -289,16 +313,52 @@ def run_experiment(
     return ctx.summary
 
 
+def prepare_backtest_config(
+    path: str | Path,
+    *,
+    device: str | None = None,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Load YAML, apply ``STX_*`` env overrides and optional CLI overrides, then Pydantic-coerce."""
+    cfg = load_config(path)
+    apply_stx_env_overrides(cfg)
+    if device is not None and str(device).strip():
+        cfg["device"] = str(device).strip()
+    if seed is not None:
+        cfg["seed"] = int(seed)
+    return coerce_experiment_config(cfg)
+
+
 def run_from_config_path(
     path: str | Path,
     *,
     synthetic: bool = False,
     device: str | None = None,
+    seed: int | None = None,
+    dry_run: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    """Load YAML, apply env + device overrides (CLI > env > file), validate, run."""
-    cfg = load_config(path)
-    apply_stx_env_overrides(cfg)
-    if device is not None and str(device).strip():
-        cfg["device"] = str(device).strip()
-    cfg = coerce_experiment_config(cfg)
-    return run_experiment_dispatch(cfg, use_synthetic=synthetic)
+    """Load YAML, validate, and run (dispatches by ``experiment_mode`` — prefer CLI :func:`prepare_backtest_config`)."""
+    cfg = prepare_backtest_config(path, device=device, seed=seed)
+    mode = str(cfg.get("experiment_mode") or "single_symbol").lower()
+    if mode == "universe":
+        from stock_transformer.backtest.universe_runner import run_universe_experiment
+
+        return run_universe_experiment(cfg, use_synthetic=synthetic, dry_run=dry_run, progress=progress)
+    return run_experiment(cfg, use_synthetic=synthetic, dry_run=dry_run, progress=progress)
+
+
+def run_single_symbol_from_config_path(
+    path: str | Path,
+    *,
+    synthetic: bool = False,
+    device: str | None = None,
+    seed: int | None = None,
+    dry_run: bool = False,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Like :func:`run_from_config_path` but requires a single-symbol experiment file."""
+    cfg = prepare_backtest_config(path, device=device, seed=seed)
+    if str(cfg.get("experiment_mode") or "single_symbol").lower() == "universe":
+        raise ValueError("experiment_mode must be single_symbol (or omitted) for run_single_symbol_from_config_path")
+    return run_experiment(cfg, use_synthetic=synthetic, dry_run=dry_run, progress=progress)

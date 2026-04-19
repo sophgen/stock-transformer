@@ -1,487 +1,406 @@
-# Refactor Plan: `stock-transformer` → Production-Ready CLI Tool
+# CLI Refactor Plan — `stx`
 
-> Audit date: 2026-04-19
-> Scope: CLI redesign, code quality, docs, packaging, CI/CD
-
----
-
-## Executive Summary
-
-`stock-transformer` is a well-structured ML experiment harness with solid Pydantic
-validation, walk-forward evaluation discipline, and reasonable test coverage. The
-main gaps are: (1) a flat CLI with no subcommands, (2) monolithic runner functions
-with duplicated patterns, (3) no structured logging, (4) standalone scripts that
-should be first-class CLI commands, and (5) missing contributor/release docs.
-
-This plan is ordered by **impact** — each section is an independent work unit.
+Status: **Draft**
+Date: 2026-04-19
 
 ---
 
-## 1. CLI Structure & Interface
+## 1. Current-state audit
 
-### Current State
+The project already has significant CLI infrastructure in place. This section maps
+what exists to each guideline area so the refactor focuses only on real gaps.
 
-- Single entrypoint `stx-backtest` via raw `argparse` with three flags (`-c`, `--synthetic`, `--device`).
-- `scripts/fetch_sample_data.py` and `scripts/sweep_loss.py` are separate `argparse` scripts with their own `main()` — not discoverable as part of the tool.
-- No verbosity control, no `--version`, no shell completions.
-- Exit codes (0/1/2) are well-defined but the error messages are bare `print()` to stderr.
+### What already works well
 
-### Proposed Changes
+| Area | Status | Evidence |
+|------|--------|----------|
+| Click-based CLI with subcommands | Done | `cli.py` — `backtest`, `fetch`, `sweep`, `validate`, `version` |
+| Short/long flag variants | Done | `-c/--config`, `-v/--verbose`, `-q/--quiet`, `-h/--help` |
+| Sensible defaults | Done | `configs/default.yaml` as default config; Pydantic fills the rest |
+| `--help` at every level | Done | Click `context_settings={"help_option_names": ["-h", "--help"]}` |
+| Exit codes | Done | 0/1/2/130 — tested in `test_cli_dispatch.py` |
+| Config hierarchy (flag > env > YAML > default) | Done | `env_config.py` + CLI flag overrides + Pydantic defaults |
+| Structured logging with verbosity | Done | `-v` INFO, `-vv` DEBUG, `-q` WARNING |
+| SIGINT handling | Done | `_install_sigint` + exit 130 |
+| Pydantic validation with clear errors | Done | `format_validation_error` renders bullet list |
+| pyproject.toml with entry points | Done | `stx` and legacy `stx-backtest` |
+| CI (GitHub Actions) | Done | lint + type-check + test on 3.11/3.12 |
+| Release workflow | Done | `v*` tag → build → PyPI |
+| README with quickstart + reference | Done | Covers install, commands, config, troubleshooting |
+| CONTRIBUTING.md | Done | Setup, architecture, testing, style |
+| CHANGELOG.md (Keep a Changelog) | Done | Two entries; Unreleased + 0.1.0 |
+| Shell completion | Done | `completions/stx.bash`, instructions in README |
+| Separation of CLI / logic / I/O | Mostly done | CLI parses, runners orchestrate, models compute |
+| Unit + integration tests for CLI | Partial | 6 tests in `test_cli_dispatch.py`; mix of subprocess + CliRunner |
+| Unknown-key typo warnings | Done | `warn_unknown_keys_single` / `warn_unknown_keys_universe` model validators |
 
-**1.1 — Migrate to `click` (or `typer`) with subcommands**
+### What's missing or incomplete
 
-Replace the flat `argparse` parser with a `click.Group` command tree:
-
-```
-stx backtest   -c CONFIG [--synthetic] [--device NAME]   # current stx-backtest
-stx fetch      [--cache-dir DIR] [--symbols SYM…] [--refresh]
-stx sweep      -c CONFIG [--synthetic]
-stx validate   -c CONFIG                                  # dry-run: load + validate only
-stx version                                               # print version + torch/device info
-```
-
-- Absorb `scripts/fetch_sample_data.py` → `stx fetch`.
-- Absorb `scripts/sweep_loss.py` → `stx sweep`.
-- Add `stx validate` for config-only checks (useful in CI or before long runs).
-- Keep `scripts/` as thin wrappers that call the click commands (backward compat), or remove them.
-
-**1.2 — Add global flags at the group level**
-
-```
-stx [--verbose / -v / -vv] [--quiet / -q] [--no-color] COMMAND …
-```
-
-`-v` sets `logging.INFO`, `-vv` sets `logging.DEBUG`, `--quiet` suppresses
-everything below `WARNING`. `--no-color` disables Rich/colorama output if added.
-
-**1.3 — Add `--version` flag**
-
-```
-stx --version   →   stock-transformer 0.1.0 (torch 2.x, device auto→mps)
-```
-
-Read from `stock_transformer.__version__` and enrich with runtime info.
-
-**1.4 — Shell completion generation**
-
-Click provides `_STX_COMPLETE=bash_source stx` etc. Document it in the README.
-Alternatively ship static completion scripts under `completions/`.
-
-**1.5 — Input validation with actionable errors**
-
-Currently Pydantic `ValidationError` propagates as an unformatted traceback. Catch
-it in the CLI layer and print a human-readable bullet list:
-
-```
-Error: invalid config configs/bad.yaml
-  • d_model (64) must be divisible by nhead (5)
-  • train_bars: value is not a valid integer
-```
+| Gap | Severity | Notes |
+|-----|----------|-------|
+| **No `--output-format` flag** | Medium | Machine consumers want JSON; humans want tables. Currently `sweep` dumps JSON, `backtest` prints one line. |
+| **No `stx config show` / `stx config diff` subcommand** | Low | Useful for debugging merged config (flag > env > YAML > default). |
+| **No progress indicators** | Medium | Multi-fold training is silent for minutes; a progress bar or periodic status line helps. |
+| **Incomplete env-var coverage** | Low | Only 4 `STX_*` vars wired; `STX_SEED`, `STX_LOG_LEVEL`, `STX_CONFIG` missing. |
+| **`backtest` doesn't dispatch on `experiment_mode`** | High | Rule 30 says this is a target for M7b; `run_from_config_path` currently handles it internally but CLI doesn't expose this as two explicit paths. |
+| **Subprocess tests are slow** | Low | `test_cli_universe_synthetic_exit_0` spawns a full training run. A thin `CliRunner` mock path would be faster for CI. |
+| **No man page generation** | Low | Click can produce man pages via `click-man`; not wired. |
+| **No `--dry-run` mode** | Medium | Validate config + resolve data + print fold plan without training. Goes beyond `validate`. |
+| **Mixed `raise SystemExit` and `ctx.exit`** | Low | `backtest_cmd` raises `SystemExit` directly; other commands let Click handle return. Inconsistent pattern. |
+| **No `--log-file` option** | Low | All output goes to stderr via `logging.basicConfig`; no file sink option. |
+| **`py.typed` marker exists but mypy strict is off** | Low | `ignore_missing_imports = true`; public API types are loose. |
+| **Version is duplicated** | Low | `__init__.py` and `pyproject.toml` both hard-code `"0.1.0"`. |
 
 ---
 
-## 2. Code Quality — Separation of Concerns
+## 2. Refactor plan
 
-### Current State
+### Phase 1 — CLI dispatch and consistency (high priority)
 
-- `runner.py::run_experiment` (200 lines) and `universe_runner.py::run_universe_experiment` (350+ lines) each do **all** of: config coercion, data loading, tokenization, fold generation, model construction, training, inference, metric computation, prediction assembly, artifact I/O.
-- Both runners duplicate: run-dir allocation, config snapshot, fold error handling, summary JSON assembly, prediction CSV writing.
-- `resolve_device()` lives in `model/transformer_classifier.py` but is imported by both runners and tests — it belongs in a shared utility.
-- Hardcoded batch sizes (256, 128) in `_predict` / `_predict_ranker`.
+**Goal:** Every subcommand behaves uniformly; experiment mode dispatch lives in the CLI layer.
 
-### Proposed Changes
+#### 1a. Unify experiment-mode dispatch in `backtest_cmd`
 
-**2.1 — Extract a shared `RunContext` dataclass**
+`backtest_cmd` should read YAML, detect `experiment_mode`, and call the
+right runner (`runner.run_from_config_path` vs
+`universe_runner.run_universe_from_config_path`). The runner modules should
+not re-detect the mode.
 
-```python
-@dataclasses.dataclass
-class RunContext:
-    run_dir: Path
-    device: torch.device
-    config: dict[str, Any]
-    git_sha: str
-    summary: dict[str, Any]   # mutable, accumulates results
+```
+File: src/stock_transformer/cli.py (backtest_cmd)
+
+- Load raw YAML → apply_stx_env_overrides → coerce_experiment_config
+- If experiment_mode == "universe": call universe runner
+- Else: call single-symbol runner
+- Both runners return a summary dict with the same shape
 ```
 
-Both `run_experiment` and `run_universe_experiment` create a `RunContext` at the
-top, pass it through, and dump `summary.json` at the bottom via a single
-`RunContext.finalize()` method. This eliminates ~40 lines of duplicated boilerplate.
+*Tests:*
+- `test_cli_dispatch.py::test_backtest_dispatches_universe` — universe config → universe runner called.
+- `test_cli_dispatch.py::test_backtest_dispatches_single` — default config → single-symbol runner called.
 
-**2.2 — Move `resolve_device` to a top-level `device.py` module**
+#### 1b. Normalize exit-code handling
 
-`src/stock_transformer/device.py` — one function, no model imports. Update all
-import sites. Keeps `model/transformer_classifier.py` focused on the model.
-
-**2.3 — Extract prediction batch-inference into model modules**
-
-Move `_predict` → `model/transformer_classifier.py::batch_predict` and
-`_predict_ranker` → `model/transformer_ranker.py::batch_predict`. Accept an
-optional `batch_size` parameter (default 256 / 128). This makes inference
-importable without importing the runner.
-
-**2.4 — Extract artifact I/O helpers**
-
-Create `backtest/artifacts.py`:
+Replace bare `raise SystemExit(N)` in command functions with a shared helper
+that Click's result callback can consume. Pattern:
 
 ```python
-def save_config_snapshot(run_dir, config): ...
-def save_predictions_csv(run_dir, records, columns, filename): ...
-def save_summary(run_dir, summary): ...
-def save_fold_payload(run_dir, folds, ts_pred): ...
+class StxResult:
+    code: int
+    message: str | None
+
+def _exit(code: int, message: str | None = None) -> None:
+    if message:
+        click.echo(message, err=(code != 0))
+    raise SystemExit(code)
 ```
 
-Both runners call these instead of inlining `json.dumps` / `pd.to_csv` patterns.
+#### 1c. Add `--output-format` to `backtest` and `sweep`
 
-**2.5 — Break `run_universe_experiment` into phases**
-
-The 350-line function should become:
-
-```python
-def run_universe_experiment(config, *, use_synthetic=False):
-    ctx = _setup_universe_run(config)
-    panel, close, X, mask, y, ... = _load_and_build_features(ctx, use_synthetic)
-    fold_results = _walk_forward_loop(ctx, X, mask, y, close, ...)
-    return _assemble_summary(ctx, fold_results)
+```
+--output-format text|json   (default: text)
 ```
 
-Each phase is independently testable.
+- `text`: current human-friendly line (`Run complete. Artifacts: …`).
+- `json`: print full `summary.json` to stdout (pipe-friendly).
+
+*Tests:* assert stdout is valid JSON when `--output-format json`.
 
 ---
 
-## 3. Structured Logging
+### Phase 2 — New subcommands and flags (medium priority)
 
-### Current State
+#### 2a. `stx config` subgroup
 
-- Progress and errors are communicated via `print()`, JSON artifact files, and CSV training logs.
-- No `logging` module usage anywhere in `src/`.
-- Silent runs make debugging slow — you have to read `summary.json` or `fold_errors.log` after the fact.
+| Subcommand | Purpose |
+|------------|---------|
+| `stx config show -c PATH` | Print fully merged config (flag > env > file > default) as YAML. |
+| `stx config diff -c PATH` | Show only keys that differ from Pydantic defaults. |
 
-### Proposed Changes
+These are read-only, no training. Helpful for debugging "what will actually run."
 
-**3.1 — Add `logging` throughout**
+#### 2b. `stx backtest --dry-run`
 
-Replace all `print()` in `src/` with `logger.info()` / `logger.warning()` /
-`logger.error()`. Key log points:
+Resolve data (or synthetic), build fold plan, print fold boundaries and
+sample counts, then exit 0 without training. Uses the same code path as a
+real run up to the training loop.
 
-- Config loaded and coerced (INFO)
-- Data fetched / synthetic generated (INFO with row counts)
-- Fold N started / completed / failed (INFO / ERROR)
-- Training epoch progress (DEBUG — only visible with `-vv`)
-- Final summary metrics (INFO)
+#### 2c. `--log-file PATH`
 
-**3.2 — Configure in the CLI layer**
+Add a global option that attaches a `FileHandler` to the root logger in
+`setup_logging`. Useful for headless / CI runs where stderr is noisy.
 
-```python
-def _setup_logging(verbosity: int, quiet: bool) -> None:
-    level = logging.WARNING if quiet else [logging.WARNING, logging.INFO, logging.DEBUG][min(verbosity, 2)]
-    logging.basicConfig(format="%(asctime)s %(levelname)-8s %(name)s — %(message)s", level=level)
-```
+#### 2d. `--seed` flag on `backtest`
 
-Called once in the click group callback.
+Override YAML `seed` from the CLI for quick reproducibility checks.
 
-**3.3 — Keep artifact files as-is**
+#### 2e. Expand `STX_*` environment variables
 
-`summary.json`, `fold_errors.log`, `training_log_fold_*.csv` stay — they are the
-structured record. Logging complements them with real-time progress.
-
----
-
-## 4. Signal Handling & Graceful Shutdown
-
-### Current State
-
-- `Ctrl+C` during a long training run produces a full Python traceback.
-- No cleanup of partial artifacts.
-
-### Proposed Changes
-
-**4.1 — Catch `KeyboardInterrupt` in CLI**
-
-```python
-try:
-    summary = run_from_config_path(...)
-except KeyboardInterrupt:
-    logger.warning("Interrupted — saving partial results")
-    # write whatever folds completed so far
-    sys.exit(130)
-```
-
-**4.2 — Save partial summary on interrupt**
-
-In the walk-forward loop, check for a `threading.Event` or simply wrap the loop
-body with a try/except for `KeyboardInterrupt`, write `summary["error"] = "interrupted"`,
-save `summary.json`, and exit cleanly.
+| Env var | YAML key | Type |
+|---------|----------|------|
+| `STX_SEED` | `seed` | int |
+| `STX_LOG_LEVEL` | (logging level) | str |
+| `STX_CONFIG` | (default config path) | str |
+| `STX_BATCH_SIZE` | `batch_size` | int |
 
 ---
 
-## 5. Config Hierarchy Hardening
+### Phase 3 — UX polish (medium priority)
 
-### Current State
+#### 3a. Progress reporting
 
-- Good: CLI `--device` → `STX_DEVICE` env → YAML `device` → `"auto"` default.
-- Weak: only `device` has this full cascade. Other knobs (e.g. `cache_dir`,
-  `artifacts_dir`, `epochs`) cannot be overridden from the environment.
-- `extra="ignore"` in Pydantic silently drops unknown YAML keys — a typo in a
-  config field (e.g. `epcohs: 20`) is silently lost, which is a footgun.
-
-### Proposed Changes
-
-**5.1 — Warn on unknown keys (don't silently ignore)**
-
-Change `extra="ignore"` → `extra="forbid"` in the Pydantic models, **or** keep
-`"ignore"` but log a warning when extra keys are present:
+Add a callback protocol that runners can call per-fold and per-epoch:
 
 ```python
-@model_validator(mode="before")
-@classmethod
-def warn_unknown(cls, values):
-    known = set(cls.model_fields)
-    for k in set(values) - known:
-        logger.warning("Unknown config key %r (typo?)", k)
-    return values
+class ProgressCallback(Protocol):
+    def on_fold_start(self, fold_id: int, total_folds: int) -> None: ...
+    def on_epoch_end(self, fold_id: int, epoch: int, total_epochs: int, metrics: dict) -> None: ...
+    def on_fold_end(self, fold_id: int, summary: dict) -> None: ...
 ```
 
-**5.2 — Support `STX_*` env overrides for common knobs**
+CLI wires this to a simple stderr progress line (or `rich.progress` bar
+behind `--rich` if the dependency is present).
 
-Define a convention: `STX_DEVICE`, `STX_CACHE_DIR`, `STX_ARTIFACTS_DIR`,
-`STX_EPOCHS`. Apply in `run_from_config_path` before coercion:
+Quiet mode (`-q`) suppresses progress entirely.
 
-```python
-_ENV_OVERRIDES = {"STX_DEVICE": "device", "STX_CACHE_DIR": "cache_dir", ...}
-for env_key, cfg_key in _ENV_OVERRIDES.items():
-    v = os.environ.get(env_key, "").strip()
-    if v:
-        cfg[cfg_key] = v
+#### 3b. Colored and styled output
+
+Conditionally use `click.style` for:
+- Error messages (red)
+- Warnings (yellow)
+- Success summary (green)
+
+Gate on `--no-color` flag (already reserved, hidden) and `NO_COLOR` env var.
+
+#### 3c. Table output for `sweep`
+
+Instead of dumping raw JSON, format a comparison table when `--output-format text`:
+
+```
+Loss      | Spearman | NDCG@2 | Hit@2
+mse       |   0.412  |  0.73  |  0.65
+listnet   |   0.438  |  0.76  |  0.68
+approx    |   0.401  |  0.71  |  0.63
 ```
 
 ---
 
-## 6. Training Loop De-duplication
+### Phase 4 — Code quality and testing (medium priority)
 
-### Current State
+#### 4a. CLI integration test harness
 
-`train_candle_transformer` and `train_transformer_ranker` in `training.py` share
-~80% of their structure: optimizer setup, scheduler creation, epoch loop, early
-stopping, best-state tracking, CSV logging. The differences are: loss computation
-and model forward signature.
-
-### Proposed Changes
-
-**6.1 — Extract a generic training harness**
+Create `tests/conftest.py` fixtures:
 
 ```python
-def _train_loop(
-    model: nn.Module,
-    train_step: Callable[[nn.Module, Tensor], Tensor],  # returns loss
-    val_step: Callable[[nn.Module], float],
-    cfg: dict,
-    device: torch.device,
-    log_path: Path | None = None,
-) -> nn.Module:
-    ...  # optimizer, scheduler, epoch loop, early stopping, CSV logging
-```
+@pytest.fixture
+def stx_runner():
+    """CliRunner pre-configured with catch_exceptions=False."""
+    return CliRunner(mix_stderr=False)
 
-`train_candle_transformer` and `train_transformer_ranker` become thin wrappers
-that define `train_step` / `val_step` closures and call `_train_loop`.
-
-This cuts ~100 lines of duplication and makes it trivial to add new model types.
-
----
-
-## 7. Documentation
-
-### Current State
-
-- `README.md`: solid (setup, modes, CLI, config, architecture, artifacts, tests).
-- No `CONTRIBUTING.md`, no `CHANGELOG.md`.
-- Module/function docstrings exist on most public APIs; a few are missing or terse.
-- No man pages, no shell completion docs.
-
-### Proposed Changes
-
-**7.1 — `CONTRIBUTING.md`**
-
-Contents:
-
-- Dev setup (`uv sync --extra dev`)
-- Architecture overview (diagram: CLI → runner → {data, features, model} → artifacts)
-- How to add a new model, loss, or feature
-- Testing policy (synthetic-only in CI, golden file updates)
-- Coding conventions (ruff, mypy, no `print()` in `src/`)
-- PR checklist
-
-**7.2 — `CHANGELOG.md`**
-
-Start with `## [Unreleased]` and backfill a `## [0.1.0]` entry covering the
-current feature set. Follow [Keep a Changelog](https://keepachangelog.com/).
-
-**7.3 — Update `README.md`**
-
-- Add subcommand reference table (after CLI migration).
-- Add `stx --version` example.
-- Add "Configuration Precedence" section (CLI > env > YAML > defaults).
-- Add shell completion install instructions.
-- Add a "Troubleshooting" section (common errors: missing API key, MPS not available, etc.).
-
-**7.4 — Docstring audit**
-
-Add/improve docstrings on:
-
-- `backtest/run_helpers.py` functions (brief but good — just add return types).
-- `data/align.py::align_universe_ohlcv` — document the returned `panel` schema.
-- `features/universe_tensor.py::build_universe_samples` — document shape/semantics of every return value.
-- `backtest/portfolio_sim.py::simulate_topk_portfolio` — document the keys in the returned dict.
-
----
-
-## 8. Testing Gaps
-
-### Current State
-
-- Good synthetic E2E coverage for both pipelines.
-- CLI tested via subprocess (exit codes, device override).
-- Config validation well-tested.
-- Missing: integration test for `stx fetch` / `stx sweep` (currently untested scripts), negative config tests (unknown keys, type mismatches beyond what exists), `KeyboardInterrupt` behavior.
-
-### Proposed Changes
-
-**8.1 — CLI integration tests for new subcommands**
-
-After migrating to click, add tests that invoke each subcommand:
-
-```python
-def test_stx_fetch_help():
-    result = runner.invoke(cli, ["fetch", "--help"])
-    assert result.exit_code == 0
-
-def test_stx_validate_good_config(tmp_path):
-    ...
-
-def test_stx_validate_bad_config_exit_1(tmp_path):
+@pytest.fixture
+def quick_universe_yaml(tmp_path):
+    """Write a minimal universe config for fast CLI tests."""
     ...
 ```
 
-**8.2 — Unit tests for extracted helpers**
+Migrate subprocess-heavy tests to `CliRunner` where possible. Keep one
+subprocess test per subcommand as a true integration test.
 
-Once `RunContext`, `artifacts.py`, and `_train_loop` are extracted, write focused
-unit tests for each (no model training needed — mock the model).
+#### 4b. Expand CLI test coverage
 
-**8.3 — Add a test for unknown config key warning**
+Target tests (in `test_cli_dispatch.py` or split into `test_cli_*.py`):
+
+| Test | Assertion |
+|------|-----------|
+| `test_backtest_json_output` | `--output-format json` → valid JSON on stdout |
+| `test_backtest_dry_run` | `--dry-run` → fold plan printed, no model files |
+| `test_config_show` | Merged config printed as valid YAML |
+| `test_config_diff` | Only non-default keys shown |
+| `test_log_file_created` | `--log-file /tmp/x.log` → file exists after run |
+| `test_seed_flag_overrides_yaml` | `--seed 99` → summary shows seed=99 |
+| `test_unknown_subcommand_exit_2` | `stx bogus` → exit 2, helpful message |
+| `test_version_output` | `stx --version` → contains `stock-transformer` |
+| `test_quiet_suppresses_info` | `-q` → no INFO lines in stderr |
+
+#### 4c. Tighten mypy
+
+- Set `strict = true` in `[tool.mypy]` or at least enable `disallow_untyped_defs`.
+- Add return-type annotations to all public functions in `cli.py`, runners, and config modules.
+- Fix the resulting errors incrementally (one module per PR).
+
+#### 4d. Single-source version
+
+Use `importlib.metadata` in `__init__.py`:
 
 ```python
-def test_unknown_key_warns(caplog):
-    raw = {**valid_config, "epcohs": 20}
-    coerce_experiment_config(raw)
-    assert "Unknown config key" in caplog.text
+from importlib.metadata import version
+__version__ = version("stock-transformer")
+```
+
+Remove the hard-coded `"0.1.0"` string. `pyproject.toml` remains the sole source.
+
+---
+
+### Phase 5 — Distribution and packaging (lower priority)
+
+#### 5a. Man page generation
+
+Add `click-man` to dev dependencies and a Makefile / script target:
+
+```bash
+uv run click-man stx --target man/
+```
+
+Ship generated man pages under `man/` in the repo. Add a CI step that
+regenerates and checks for drift.
+
+#### 5b. Shell completion for zsh and fish
+
+Extend `completions/` with generated scripts:
+
+```bash
+_STX_COMPLETE=zsh_source stx > completions/stx.zsh
+_STX_COMPLETE=fish_source stx > completions/stx.fish
+```
+
+Document in README under a "Shell completion" section (currently bash-only).
+
+#### 5c. Docker image
+
+Add a minimal `Dockerfile`:
+
+```dockerfile
+FROM python:3.11-slim
+COPY . /app
+RUN pip install /app
+ENTRYPOINT ["stx"]
+```
+
+Document in README for users who don't want to install Python/PyTorch locally.
+
+#### 5d. CI enhancements
+
+| Addition | File | Purpose |
+|----------|------|---------|
+| Smoke test on macOS | `ci.yml` | Catch MPS-related regressions |
+| `--cov-fail-under=80` | `ci.yml` | Coverage gate |
+| Dependabot config | `.github/dependabot.yml` | Automated dep updates |
+| Release notes generation | `release.yml` | Auto-generate from CHANGELOG on tag |
+
+---
+
+## 3. Architectural principles for the refactor
+
+### Layer separation (already mostly in place — formalize it)
+
+```
+┌──────────────────────────────────────────────┐
+│  CLI layer  (cli.py)                         │
+│  - Parse args, setup logging, catch errors   │
+│  - No training logic, no tensor ops          │
+├──────────────────────────────────────────────┤
+│  Orchestration layer  (backtest/*.py)        │
+│  - Runners, walk-forward, fold management    │
+│  - Calls model/feature/label modules         │
+│  - Returns summary dicts (pure data)         │
+├──────────────────────────────────────────────┤
+│  Core layer  (model/, features/, labels/)    │
+│  - Pure computation, no I/O, no CLI deps     │
+│  - Testable with synthetic tensors only      │
+├──────────────────────────────────────────────┤
+│  I/O layer  (data/, backtest/artifacts.py)   │
+│  - File reads/writes, API calls, caching     │
+│  - Isolated behind interfaces                │
+└──────────────────────────────────────────────┘
+```
+
+**Rule:** imports flow downward only. `cli.py` may import from `backtest/`
+and `config_models.py`. Core and I/O layers must not import from `cli.py`.
+
+### Config resolution order (already implemented — keep it)
+
+```
+CLI flags  →  STX_* env vars  →  YAML file  →  Pydantic defaults
+         (highest priority)                    (lowest priority)
 ```
 
 ---
 
-## 9. Distribution & Packaging
+## 4. File change map
 
-### Current State
+Estimated files touched per phase, to help scope PRs.
 
-- `pyproject.toml` is clean: setuptools build, `src`-layout, `[project.scripts]` entrypoint.
-- CI runs lint + type check + tests on Python 3.11/3.12.
-- No release workflow, no version bumping, no PyPI publish step.
-
-### Proposed Changes
-
-**9.1 — Update `[project.scripts]` for the new CLI**
-
-```toml
-[project.scripts]
-stx = "stock_transformer.cli:main"
-```
-
-(Drop `stx-backtest` or keep as alias for backward compat.)
-
-**9.2 — Add CI release workflow**
-
-```yaml
-# .github/workflows/release.yml
-on:
-  push:
-    tags: ["v*"]
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - run: uv build
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-```
-
-**9.3 — Add `py.typed` marker**
-
-Create `src/stock_transformer/py.typed` (empty file) so downstream consumers get
-type information from mypy.
-
-**9.4 — Pin minimum dependency versions more tightly**
-
-Current: `torch>=2.2`. Consider upper bounds or tested-range comments in
-`pyproject.toml` to avoid silent breakage on major bumps.
+| Phase | Files modified | Files added |
+|-------|---------------|-------------|
+| 1a | `cli.py`, `runner.py` | — |
+| 1b | `cli.py` | — |
+| 1c | `cli.py` | — |
+| 2a | `cli.py` | — |
+| 2b | `cli.py`, `universe_runner.py`, `runner.py` | — |
+| 2c | `cli.py` | — |
+| 2d | `cli.py` | — |
+| 2e | `env_config.py` | — |
+| 3a | `cli.py`, `universe_runner.py`, `runner.py`, `training.py` | — |
+| 3b | `cli.py` | — |
+| 3c | `cli.py` | — |
+| 4a | `test_cli_dispatch.py` | `tests/conftest.py` (if not present) |
+| 4b | `test_cli_dispatch.py` | — |
+| 4c | `pyproject.toml`, multiple `*.py` | — |
+| 4d | `__init__.py` | — |
+| 5a | `pyproject.toml` | `man/stx.1`, script |
+| 5b | — | `completions/stx.zsh`, `completions/stx.fish` |
+| 5c | — | `Dockerfile` |
+| 5d | `ci.yml`, `release.yml` | `.github/dependabot.yml` |
 
 ---
 
-## 10. Minor Quality-of-Life Improvements
+## 5. Suggested PR sequence
 
-| Item | Location | Change |
-|------|----------|--------|
-| Hardcoded batch sizes | `runner.py:66`, `universe_runner.py:95` | Make configurable via `inference_batch_size` config key |
-| `load_config` duplicated | `runner.py:47`, `universe_runner.py:479` | Use single `load_config` from runner (universe already imports runner) |
-| `BLE001` broad except | `runner.py:266`, `universe_runner.py:399` | Already intentional (fold isolation), but add a brief comment explaining the contract |
-| `_safe_nanmean` | `universe_runner.py:68` | Move to `metrics.py` where it logically belongs |
-| Legacy `CandleTransformerClassifier` | `transformer_classifier.py:107` | Deprecation warning + removal timeline (it's dead code if no external consumers) |
-| `run_universe_from_config_path` | `universe_runner.py:478` | Unused in the codebase (dead code); remove or wire into CLI |
-| Redundant `load_universe_config_from_dict` | `universe_runner.py:461` | Overlaps with `coerce_universe_config`; consolidate |
+Each PR should be independently mergeable and leave the tool fully functional.
 
----
-
-## Suggested Priority Order
-
-| Phase | Sections | Estimated Effort |
-|-------|----------|------------------|
-| **Phase 1** | §1 (CLI) + §7.1–7.2 (CONTRIBUTING, CHANGELOG) | 1–2 days |
-| **Phase 2** | §2 (Separation of concerns) + §6 (Training dedup) | 1–2 days |
-| **Phase 3** | §3 (Logging) + §4 (Signal handling) + §5 (Config) | 0.5–1 day |
-| **Phase 4** | §8 (Tests) + §9 (Packaging/CI) + §10 (QoL) | 0.5–1 day |
-
-Each phase is independently mergeable. Phase 1 has the highest user-facing impact.
-Phase 2 has the highest maintainability impact.
+| PR | Phase | Scope | Risk |
+|----|-------|-------|------|
+| **PR-1** | 1a + 1b | Dispatch + exit-code cleanup | Medium — touches the hot path |
+| **PR-2** | 1c | `--output-format` flag | Low |
+| **PR-3** | 2a | `stx config show/diff` | Low — new commands, no existing behavior changes |
+| **PR-4** | 2b + 2d + 2e | `--dry-run`, `--seed`, env vars | Low |
+| **PR-5** | 2c + 3b | `--log-file`, colored output | Low |
+| **PR-6** | 3a | Progress callbacks | Medium — threads through runners |
+| **PR-7** | 3c | Sweep table output | Low |
+| **PR-8** | 4a + 4b | Test harness + expanded coverage | Low |
+| **PR-9** | 4c | mypy strict | Low — type-only changes |
+| **PR-10** | 4d | Single-source version | Low |
+| **PR-11** | 5a + 5b | Man pages + completions | Low |
+| **PR-12** | 5c + 5d | Docker + CI hardening | Low |
 
 ---
 
-## Files Touched (Expected)
+## 6. Out of scope for this refactor
 
-```
-NEW    src/stock_transformer/device.py
-NEW    src/stock_transformer/backtest/artifacts.py
-NEW    src/stock_transformer/backtest/context.py
-NEW    CONTRIBUTING.md
-NEW    CHANGELOG.md
-NEW    src/stock_transformer/py.typed
-NEW    .github/workflows/release.yml
+These items are explicitly **not** part of the CLI refactor to avoid scope creep:
 
-EDIT   src/stock_transformer/cli.py              — click migration, logging setup
-EDIT   src/stock_transformer/backtest/runner.py   — extract RunContext, artifacts, phases
-EDIT   src/stock_transformer/backtest/universe_runner.py — same
-EDIT   src/stock_transformer/backtest/training.py — generic train loop
-EDIT   src/stock_transformer/backtest/metrics.py  — absorb _safe_nanmean
-EDIT   src/stock_transformer/model/transformer_classifier.py — batch_predict, remove resolve_device
-EDIT   src/stock_transformer/model/transformer_ranker.py     — batch_predict
-EDIT   src/stock_transformer/config_models.py     — unknown-key warning
-EDIT   pyproject.toml                             — click dep, entrypoint rename, py.typed
-EDIT   README.md                                  — updated CLI docs
-EDIT   .github/workflows/ci.yml                   — (minor: add release job reference)
-EDIT   tests/test_cli_dispatch.py                 — click test runner
-EDIT   scripts/fetch_sample_data.py               — thin wrapper or remove
-EDIT   scripts/sweep_loss.py                      — thin wrapper or remove
+- New model architectures or training features (stay on milestone track in `plan.md`).
+- MCP data-source wiring (M12).
+- Portfolio simulation changes (M11).
+- New ranking losses (M10).
+- Deleting the single-symbol reference path.
+- Rewriting runners or model code — only interface changes where needed for CLI.
+- GUI or web dashboard.
 
-DELETE (candidates, optional)
-       src/stock_transformer/model/transformer_classifier.py::CandleTransformerClassifier  (dead code)
-       src/stock_transformer/backtest/universe_runner.py::run_universe_from_config_path     (unused)
-```
+---
+
+## 7. Acceptance criteria
+
+The refactor is complete when:
+
+1. `stx --help`, `stx <cmd> --help` cover all commands and flags.
+2. `stx backtest` dispatches correctly for both experiment modes.
+3. `--output-format json` produces valid, parseable JSON for `backtest` and `sweep`.
+4. `stx config show` and `stx config diff` work.
+5. `--dry-run` prints fold plan without training.
+6. All exit codes (0/1/2/130) are tested with both `CliRunner` and subprocess.
+7. `stx --version` reports a single-sourced version.
+8. CI passes with `--cov-fail-under=80`.
+9. README documents every subcommand, flag, env var, and exit code.
+10. CONTRIBUTING.md reflects the updated architecture.
+11. Shell completions exist for bash, zsh, and fish.

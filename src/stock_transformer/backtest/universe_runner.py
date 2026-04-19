@@ -28,6 +28,7 @@ from stock_transformer.backtest.portfolio_sim import (
     aggregate_portfolio_sim_folds,
     simulate_topk_portfolio,
 )
+from stock_transformer.backtest.progress import ProgressCallback
 from stock_transformer.backtest.run_helpers import (
     allocate_run_dir,
     append_fold_error_log,
@@ -85,6 +86,8 @@ def run_universe_experiment(
     config: dict[str, Any],
     *,
     use_synthetic: bool = False,
+    dry_run: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     config = coerce_universe_config(config)
     u = load_universe_config_from_dict(config)
@@ -241,6 +244,18 @@ def run_universe_experiment(
         )
         return summary
 
+    if dry_run:
+        summary["dry_run"] = True
+        summary["fold_plan"] = folds_payload
+        save_summary(run_dir, summary)
+        pred_path = run_dir / "predictions_universe.csv"
+        pred_path.write_text(
+            "timestamp,symbol,timeframe,y_true_raw_return,y_true_relative_return,"
+            "y_score,y_rank_pred,y_rank_true,fold_id\n"
+        )
+        logger.info("Dry run: wrote fold plan to %s", run_dir / "folds.json")
+        return summary
+
     fold_rows: list[dict[str, Any]] = []
     pred_records: list[dict[str, Any]] = []
     fold_errors: list[dict[str, Any]] = []
@@ -254,6 +269,8 @@ def run_universe_experiment(
             try:
                 assert_fold_chronology(ts_pred, fold)
                 logger.info("Universe fold %s", fold.fold_id)
+                if progress is not None:
+                    progress.on_fold_start(fold.fold_id, len(folds))
                 sl_tr, sl_va, sl_te = fold.train, fold.val, fold.test
 
                 scaler = TrainOnlyScaler()
@@ -286,6 +303,8 @@ def run_universe_experiment(
                     device,
                     loss_name,
                     log_path=log_path,
+                    progress=progress,
+                    progress_fold_id=fold.fold_id,
                 )
 
                 if bool(config.get("save_models", False)):
@@ -334,6 +353,8 @@ def run_universe_experiment(
                     row["baseline_gbt_spearman_mean"] = float("nan")
 
                 fold_rows.append(row)
+                if progress is not None:
+                    progress.on_fold_end(fold.fold_id, row)
                 per_fold_sector.append(per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2))
 
                 pad_te = mask[sl_te][:, -1, :]
@@ -462,6 +483,26 @@ def run_universe_experiment(
     save_summary(run_dir, summary)
     logger.info("Universe run finished: %s", run_dir)
     return summary
+
+
+def run_universe_from_config_path(
+    path: str | Path,
+    *,
+    synthetic: bool = False,
+    device: str | None = None,
+    seed: int | None = None,
+    dry_run: bool = False,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Load YAML, validate as universe experiment, and run (or dry-run) the universe pipeline."""
+    from stock_transformer.backtest.runner import prepare_backtest_config
+
+    cfg = prepare_backtest_config(path, device=device, seed=seed)
+    if str(cfg.get("experiment_mode") or "").lower() != "universe":
+        raise ValueError(
+            f"experiment_mode must be 'universe' for run_universe_from_config_path (got {cfg.get('experiment_mode')!r})"
+        )
+    return run_universe_experiment(cfg, use_synthetic=synthetic, dry_run=dry_run, progress=progress)
 
 
 def load_universe_config_from_dict(config: dict[str, Any]) -> UniverseConfig:

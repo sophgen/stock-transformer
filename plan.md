@@ -595,20 +595,21 @@ alignment.
 
 ## CLI contract
 
-- Entrypoint: `stx-backtest [-c CONFIG] [--synthetic]`.
-- Dispatch by `experiment_mode` in YAML (landing in M7b — today's CLI always
-  calls the single-symbol runner):
-  - `"single_symbol"` (or absent) → `backtest/runner.py::run_from_config_path`.
-  - `"universe"` → `backtest/universe_runner.py::run_universe_from_config_path`.
-- Exit codes (final target, M7b):
+- Entrypoint: `stx` (`stx-backtest` is a legacy alias for `stx backtest`).
+- Dispatch by `experiment_mode` in YAML after `prepare_backtest_config`:
+  - `"single_symbol"` (or absent) → `backtest/runner.py::run_experiment`.
+  - `"universe"` → `backtest/universe_runner.py::run_universe_experiment`.
+  - Library helpers: `run_from_config_path`, `run_single_symbol_from_config_path`, `run_universe_from_config_path`.
+- Exit codes:
   - `0` — success.
-  - `1` — missing / unreadable config.
-  - `2` — at least one fold raised; `summary.json["error"]` is populated and
+  - `1` — missing / unreadable config or validation error.
+  - `2` — at least one fold raised or `no_folds`; `summary.json["error"]` may be populated and
     partial results for completed folds are still written.
+  - `130` — interrupt (Ctrl+C) after best-effort artifact write.
 - `summary.json` is always written, even on partial failure.
 - `--synthetic` forces the synthetic data path for both modes (CI / smoke test).
-- On success, the CLI prints exactly one line to stdout:
-  `Run complete. Artifacts: <run_dir>` (machine-parseable by downstream jobs).
+- On success in default **text** mode, the CLI prints one line to stdout:
+  `Run complete. Artifacts: <run_dir>`. Use `--output-format json` for the full summary dict.
 
 ## Runtime baseline
 
