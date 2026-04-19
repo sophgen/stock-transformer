@@ -22,7 +22,8 @@ peer set at every timestamp.
   (`y[t, s] = close[t+1, s] / close[t, s] - 1`, optionally demeaned by the
   live-peer nanmedian at `t`).
 - Evaluation is **ranking-first** (Spearman, NDCG@k, top-k hit rate) and
-  regression-secondary (MAE / RMSE). There is **no PnL simulation in v1**.
+  regression-secondary (MAE / RMSE). **Default runs** omit PnL; an **opt-in**
+  top-k portfolio stub (M11) can post-process test-fold predictions.
 
 Two prediction heads exist in the repo:
 
@@ -44,8 +45,9 @@ pipeline (see [§Pilot](#pilot-small-universe-drill-down-for-mstr)).
   by the **nanmedian** of the live cross-section at the same timestamp.
 - **Initial prediction task:** score all tickers at time `t` by expected return
   from `t` to `t+1`; report ranking quality.
-- **Backtest mode:** forecast evaluation only for v1 — no position sizing or
-  PnL simulation.
+- **Backtest mode:** forecast evaluation is primary for v1; **optional**
+  `portfolio_sim` (M11) adds a simple top-k book + turnover + cost stub on
+  test folds only — no production execution path.
 - **Supported timeframes:** `1min, 5min, 15min, 30min, 60min, daily, weekly,
   monthly`. The `timeframe` field in YAML accepts any of these; it maps to
   Alpha Vantage endpoints via the table in [§Alpha Vantage data plan](#alpha-vantage-data-plan).
@@ -179,6 +181,7 @@ future milestone are tagged with the milestone id.
 | `d_model` / `nhead` / `num_temporal_layers` / `num_cross_layers` / `dim_feedforward` / `dropout` | numeric | — | M5 | `TransformerRanker` hyperparameters. |
 | `epochs` / `batch_size` / `learning_rate` | numeric | — | M5 | Optimiser. |
 | `loss` | `"mse"\|"listnet"\|"approx_ndcg"` | `"mse"` | M10 | Training loss ablation. |
+| `portfolio_sim` | `dict` (see M11) | — | M11 | Optional test-fold portfolio simulation; default unset / disabled. |
 | `features` | `list[str]` | implicit v1 list | M9a | Explicit feature enumeration; bumps `feature_schema_hash`. |
 | `sector_map_path` | `str` | `"configs/sector_map.yaml"` | M9b | Required when `label_mode == "sector_neutral_return"`. |
 | `device` | `"auto"\|"cpu"\|"cuda"\|"mps"` | `"auto"` | M5 | Resolved by `resolve_device`. |
@@ -268,6 +271,7 @@ src/stock_transformer/
 └── backtest/
     ├── walkforward.py         # fold generation + chronology checks
     ├── metrics.py             # regression + ranking metrics, per-sector
+    ├── portfolio_sim.py       # optional top-k book + turnover (M11)
     ├── runner.py              # single-symbol experiment
     └── universe_runner.py     # universe experiment (primary)
 configs/
@@ -300,6 +304,7 @@ tests/
 ├── test_summary_per_sector.py
 ├── test_ranking_losses.py
 ├── test_ranking_metrics.py
+├── test_portfolio_sim.py
 └── test_mcp_rest_parity.py
 ```
 
@@ -314,6 +319,7 @@ tests/
 | M9a | `src/stock_transformer/features/cross_sectional.py`, `src/stock_transformer/features/scaling.py`, `tests/test_feature_schema_hash.py` |
 | M9b | `configs/sector_map.yaml`, `tests/test_sector_neutral_labels.py`, `tests/test_summary_per_sector.py` |
 | M10 | `src/stock_transformer/model/losses.py`, `src/stock_transformer/backtest/loss_sweep.py`, `scripts/sweep_loss.py`, `tests/test_ranking_losses.py`, `tests/test_sweep_loss.py` |
+| M11 | `src/stock_transformer/backtest/portfolio_sim.py`, `tests/test_portfolio_sim.py`, `backtest/universe_runner.py` (wire-up) |
 | M12 | `src/stock_transformer/data/mcp_canonicalize.py` + `tests/test_mcp_rest_parity.py`, `tests/fixtures/av_raw/*.json` |
 
 ## Alpha Vantage data plan
@@ -870,11 +876,24 @@ Every run writes to `artifacts/universe_run_<UTC-timestamp>/`:
 
 ---
 
-- [ ] **M11 — (Future) Portfolio construction + trading simulation.**
-  - Gated on M9a/M9b+M10 producing ranking quality demonstrably above baselines
-    on ≥ 2 walk-forward horizons.
-  - Scope: top-k long-only and long/short books; transaction-cost stub;
-    turnover reporting. No code to be written before gate is met.
+- [x] **M11 — Portfolio construction + trading simulation (stub).**
+  - **Files:**
+    - `backtest/portfolio_sim.py` (new): `simulate_topk_portfolio`,
+      `aggregate_portfolio_sim_folds` — equal-weight **long-only** top-`k` or
+      **long/short** (top `k` long + bottom `k` short, dollar-neutral, 100% gross);
+      one-way turnover ``sum |Δw|``; fee = `transaction_cost_one_way_bps` × turnover.
+    - `backtest/universe_runner.py` (edit): when `portfolio_sim.enabled`, run on
+      each **test** slice after the ranker; write `summary.json["portfolio_sim"]`
+      with `by_fold` + `aggregate`.
+  - **Config:** nested `portfolio_sim` with `enabled` (bool), `book`
+    (`long_only` \| `long_short`), `top_k` (int), `transaction_cost_one_way_bps` (float).
+    Default remains **off** (omit block or `enabled: false`).
+  - **Tests:** `tests/test_portfolio_sim.py` (turnover, costs, padding, books);
+    `tests/test_universe_runner_synthetic.py::test_universe_synthetic_portfolio_sim_opt_in`.
+  - **Commands:** `pytest tests/test_portfolio_sim.py tests/test_universe_runner_synthetic.py -v`.
+  - **Artifacts:** `summary.json` gains optional `portfolio_sim` block; no change to
+    `predictions_universe.csv`.
+  - **Out of scope:** borrow fees, realistic market impact, live execution, risk limits.
 
 ---
 

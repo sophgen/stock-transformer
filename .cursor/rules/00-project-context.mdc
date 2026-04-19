@@ -7,7 +7,7 @@ alwaysApply: true
 
 ## What this repo does
 
-Cross-sectional ranking over a **universe of tickers**. Each sample is a panel `[L, S, F]` (lookback × symbols × features) at prediction time `t`; target is the move from `t → t+1`. **v1 is forecast evaluation only** — Spearman, NDCG@k, top-k hit rate, MAE/RMSE. **No PnL / portfolio / sizing** code in v1.
+Cross-sectional ranking over a **universe of tickers**. Each sample is a panel `[L, S, F]` (lookback × symbols × features) at prediction time `t`; target is the move from `t → t+1`. **Primary v1 output** is forecast evaluation — Spearman, NDCG@k, top-k hit rate, MAE/RMSE. **Optional** `portfolio_sim` (M11) adds a config-gated top-k book + turnover + cost stub on test folds; it is not a live trading stack.
 
 ## Primary vs reference paths
 
@@ -30,7 +30,7 @@ Cross-sectional ranking over a **universe of tickers**. Each sample is a panel `
 
 ## Scope guardrails (do not add without explicit ask)
 
-- **No PnL / portfolio simulation / position sizing / transaction costs** — that is M11 and gated.
+- **No default PnL path** — keep ranking metrics the default. Portfolio simulation is **opt-in** via `portfolio_sim.enabled` (M11); do not imply execution, borrow, or realistic impact unless explicitly extended.
 - **No MCP data path** outside M12 — default `data_source` is `rest`.
 - **No new single-symbol features** on the reference path — put new work on the universe path.
 - **No network calls in tests** (see `20-testing-and-data.mdc`).

@@ -24,6 +24,11 @@ from stock_transformer.backtest.metrics import (
     spearman_per_timestamp,
     top_k_hit_rate,
 )
+from stock_transformer.backtest.portfolio_sim import (
+    Book,
+    aggregate_portfolio_sim_folds,
+    simulate_topk_portfolio,
+)
 from stock_transformer.backtest.walkforward import WalkForwardConfig, assert_fold_chronology, generate_folds
 from stock_transformer.data.align import align_universe_ohlcv
 from stock_transformer.data.alphavantage import AlphaVantageClient, fetch_candles_for_universe
@@ -214,6 +219,17 @@ def run_universe_experiment(
     store = config.get("store")
     data_source = str(config.get("data_source", "rest"))
 
+    psim_raw = config.get("portfolio_sim")
+    psim_enabled = bool(isinstance(psim_raw, dict) and psim_raw.get("enabled", False))
+    psim_book: Book = "long_only"
+    psim_k = 2
+    psim_bps = 0.0
+    if psim_enabled and isinstance(psim_raw, dict):
+        book_s = str(psim_raw.get("book", "long_only")).lower().replace("-", "_")
+        psim_book = "long_short" if book_s in ("long_short", "ls") else "long_only"
+        psim_k = int(psim_raw.get("top_k", 2))
+        psim_bps = float(psim_raw.get("transaction_cost_one_way_bps", 0.0))
+
     wf = WalkForwardConfig(
         train_bars=int(config["train_bars"]),
         val_bars=int(config["val_bars"]),
@@ -336,6 +352,7 @@ def run_universe_experiment(
     all_pred_rows: list[pd.DataFrame] = []
     fold_errors: list[dict[str, Any]] = []
     per_fold_sector: list[dict[str, dict[str, float]]] = []
+    portfolio_fold_summaries: list[dict[str, Any]] = []
 
     for fold in folds:
         try:
@@ -422,6 +439,31 @@ def run_universe_experiment(
                 per_sector_metric_summary(pred_te, y_te, symbols, sectors_arr, min_valid=2)
             )
 
+            if psim_enabled:
+                pad_te = mask[sl_te][:, -1, :]
+                psim_res = simulate_topk_portfolio(
+                    pred_te,
+                    raw_te,
+                    pad_last=pad_te,
+                    book=psim_book,
+                    top_k=psim_k,
+                    transaction_cost_one_way_bps=psim_bps,
+                    record_series=False,
+                )
+                portfolio_fold_summaries.append(
+                    {
+                        "fold_id": fold.fold_id,
+                        "n_periods": psim_res["n_periods"],
+                        "mean_gross_return": psim_res["mean_gross_return"],
+                        "mean_net_return": psim_res["mean_net_return"],
+                        "mean_turnover": psim_res["mean_turnover"],
+                        "mean_cost": psim_res["mean_cost"],
+                        "cumulative_gross_return": psim_res["cumulative_gross_return"],
+                        "cumulative_net_return": psim_res["cumulative_net_return"],
+                        "sharpe_net": psim_res["sharpe_net"],
+                    }
+                )
+
             for i, j in enumerate(range(sl_te.start, sl_te.stop)):
                 ts = ts_pred.iloc[j]
                 fold_id = fold.fold_id
@@ -470,6 +512,25 @@ def run_universe_experiment(
                         "n_folds": float(len(vals)),
                     }
             summary["aggregate"]["per_sector"] = agg_sec
+
+    if psim_enabled:
+        if portfolio_fold_summaries:
+            summary["portfolio_sim"] = {
+                "enabled": True,
+                "book": psim_book,
+                "top_k": psim_k,
+                "transaction_cost_one_way_bps": psim_bps,
+                "by_fold": portfolio_fold_summaries,
+                "aggregate": aggregate_portfolio_sim_folds(portfolio_fold_summaries),
+            }
+        else:
+            summary["portfolio_sim"] = {
+                "enabled": True,
+                "book": psim_book,
+                "top_k": psim_k,
+                "transaction_cost_one_way_bps": psim_bps,
+                "error": "no_fold_results",
+            }
 
     pred_path = run_dir / "predictions_universe.csv"
     if all_pred_rows:

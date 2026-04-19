@@ -32,6 +32,13 @@ store: "csv"
 # Training loss: mse | listnet | approx_ndcg
 loss: "mse"
 
+# M11 optional post-hoc portfolio sim on test folds (default off; ranking metrics unchanged).
+# portfolio_sim:
+#   enabled: true
+#   book: "long_only"       # long_only | long_short
+#   top_k: 2
+#   transaction_cost_one_way_bps: 0.0
+
 # Explicit numeric features (default: 5 OHLCV tensor columns). Extends F and feature_schema_hash.
 # features:
 #   - open_log_prev_close
