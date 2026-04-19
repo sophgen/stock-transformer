@@ -104,8 +104,8 @@ def bucket_labels_by_quantile(
         ranks = np.empty_like(order)
         ranks[order] = np.arange(len(x))
         bucket = np.full(x.shape[0], 1.0)
-        bucket[ranks < k] = 2.0
-        bucket[ranks >= len(x) - k] = 0.0
+        bucket[ranks < k] = 0.0
+        bucket[ranks >= len(x) - k] = 2.0
         br = np.full(n_s, np.nan)
         br[np.where(valid)[0]] = bucket
         out[i] = br
