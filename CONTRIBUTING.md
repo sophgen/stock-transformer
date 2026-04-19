@@ -16,6 +16,23 @@ Alternatively, create a venv and `pip install -e ".[dev]"`.
 
 **Locked dependencies:** `uv.lock` pins transitive versions for reproducible installs; bump it with `uv lock` when you change `pyproject.toml`.
 
+## Configuration precedence
+
+For keys touched by both files and the environment, the merge order is documented in
+`prepare_backtest_config` in `src/stock_transformer/backtest/runner.py`: **YAML file →
+non-empty `STX_*` env vars → explicit `device` / `seed` from library or CLI**. In the
+`stx backtest` command, pass `--device` / `--seed` to override env and file without
+editing YAML.
+
+## Exit codes (CLI)
+
+| Code | When |
+|------|------|
+| 0 | Success |
+| 1 | Bad or missing config, validation error, or other CLI/runtime error |
+| 2 | Partial experiment failure (e.g. fold errors) or `no_folds` — inspect `summary.json` |
+| 130 | SIGINT / Ctrl+C after best-effort cleanup |
+
 ## Architecture (high level)
 
 ```text

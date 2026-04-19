@@ -30,6 +30,8 @@ dev = [
   "mypy>=1.8",
   "types-PyYAML>=6.0",
   "types-requests>=2.31",
+  "rich>=15.0.0",
+  "click-man>=0.5.1",
 ]
 
 [project.scripts]
@@ -65,9 +67,3 @@ mypy_path = "src"
 ignore_missing_imports = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
-
-[dependency-groups]
-dev = [
-    "click-man>=0.5.1",
-    "rich>=15.0.0",
-]

@@ -6,6 +6,10 @@ stx \- Leakage-safe walk-forward experiments...
 [OPTIONS] COMMAND [ARGS]...
 .SH DESCRIPTION
 Leakage-safe walk-forward experiments (single-symbol or universe) and data helpers.
+.PP
+Root options run before subcommands so library loggers inherit a consistent level and
+long jobs install SIGINT handling once per process.
+.PP
 .SH OPTIONS
 .TP
 \fB\-v,\fP \-\-verbose

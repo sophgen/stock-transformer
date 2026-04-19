@@ -347,6 +347,37 @@ def test_stx_fetch_help():
     assert "cache-dir" in result.output.lower() or "--cache-dir" in result.output
 
 
+def test_fetch_rejects_blank_symbol_after_strip():
+    runner = CliRunner()
+    for args in (["fetch", "--symbols", ""], ["fetch", "--symbols", "   "]):
+        r = runner.invoke(cli, args, catch_exceptions=False)
+        assert r.exit_code != 0
+        out = (r.output + (r.stderr or "")).lower()
+        assert "non-empty" in out
+
+
+def test_fetch_normalizes_symbols_to_uppercase(monkeypatch):
+    import stock_transformer.cli.app as app_mod
+
+    seen: list[list[str]] = []
+
+    def capture(cache_dir, symbols, *, refresh):
+        seen.append(list(symbols))
+
+    monkeypatch.setattr(app_mod, "run_fetch", capture)
+    runner = CliRunner()
+    r = runner.invoke(cli, ["fetch", "--symbols", "mstr"], catch_exceptions=False)
+    assert r.exit_code == 0
+    assert seen == [["MSTR"]]
+
+
+def test_config_group_accepts_dash_h():
+    runner = CliRunner()
+    r = runner.invoke(cli, ["config", "-h"], catch_exceptions=False)
+    assert r.exit_code == 0
+    assert "show" in r.output and "diff" in r.output
+
+
 def test_stx_validate_good_config():
     runner = CliRunner()
     result = runner.invoke(cli, ["validate", "-c", str(REPO / "configs" / "default.yaml")])

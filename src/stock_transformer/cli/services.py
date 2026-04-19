@@ -25,6 +25,12 @@ def run_backtest(
     dry_run: bool,
     progress: ProgressCallback | None,
 ) -> dict[str, Any]:
+    """Load and run the experiment for ``config_path`` (single-symbol or universe).
+
+    Resolves runners through :mod:`stock_transformer.cli` so tests can patch
+    ``run_experiment`` / ``run_universe_experiment`` on that package and hit the same
+    code path as the real CLI.
+    """
     import stock_transformer.cli as stx_cli
 
     cfg = stx_cli.prepare_backtest_config(config_path, device=device, seed=seed)
@@ -35,12 +41,14 @@ def run_backtest(
 
 
 def run_fetch(cache_dir: str, symbols: list[str], *, refresh: bool) -> None:
+    """Download and canonicalize OHLCV for ``symbols`` under ``cache_dir``."""
     from stock_transformer.data.fetch_cmd import fetch_universe_sample_data
 
     fetch_universe_sample_data(cache_dir, symbols, refresh=refresh)
 
 
 def run_sweep(config_path: Path, *, use_synthetic: bool) -> dict[str, Any]:
+    """Run the ranking-loss sweep for a universe YAML and return the merged summary dict."""
     import stock_transformer.cli as stx_cli
 
     with open(config_path, encoding="utf-8") as f:
@@ -49,6 +57,7 @@ def run_sweep(config_path: Path, *, use_synthetic: bool) -> dict[str, Any]:
 
 
 def validate_config_file(config_path: Path) -> None:
+    """Load YAML, apply env overrides, and Pydantic-coerce without training (for CI and editors)."""
     from stock_transformer.backtest.env_config import apply_stx_env_overrides
     from stock_transformer.backtest.runner import load_config
     from stock_transformer.config_models import coerce_experiment_config
@@ -61,4 +70,5 @@ def validate_config_file(config_path: Path) -> None:
 
 
 def validation_error_message(exc: ValidationError, *, config_path: Path) -> str:
+    """Format a validation error with the config path so users know which file failed."""
     return format_validation_error(exc, path_hint=str(config_path))

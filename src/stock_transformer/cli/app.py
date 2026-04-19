@@ -1,4 +1,9 @@
-"""Click application: command tree, options, and thin handlers that delegate to ``services``."""
+"""Click application: command tree, options, and thin handlers that delegate to ``services``.
+
+Handlers stay small so :mod:`stock_transformer.cli.services` and the backtest package stay
+easy to unit-test without spawning a process; this module only translates Click outcomes
+into exit codes and user-visible text.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ from stock_transformer.cli.services import (
     validation_error_message,
 )
 from stock_transformer.cli.sigint import install_sigint_handler
-from stock_transformer.cli.validators import device_option
+from stock_transformer.cli.validators import device_option, normalize_fetch_symbols
 from stock_transformer.config_models import SingleSymbolExperimentConfig, UniverseExperimentConfig
 from stock_transformer.data.fetch_cmd import DEFAULT_UNIVERSE
 
@@ -38,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _exit(code: int, message: str | None = None) -> None:
+    """Print ``message`` to the appropriate stream, then raise ``SystemExit(code)``."""
     if message:
         click.echo(message, err=(code != 0))
     raise SystemExit(code)
@@ -72,7 +78,11 @@ def cli(
     no_color: bool,
     use_rich: bool,
 ) -> None:
-    """Leakage-safe walk-forward experiments (single-symbol or universe) and data helpers."""
+    """Leakage-safe walk-forward experiments (single-symbol or universe) and data helpers.
+
+    Root options run before subcommands so library loggers inherit a consistent level and
+    long jobs install SIGINT handling once per process.
+    """
     load_dotenv()
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -165,6 +175,7 @@ def backtest_cmd(
 @click.option(
     "--symbols",
     multiple=True,
+    callback=normalize_fetch_symbols,
     help="Ticker symbols (repeatable). Default: pilot universe.",
 )
 @click.option(
@@ -221,7 +232,11 @@ def sweep_cmd(ctx: click.Context, config_path: Path, synthetic: bool, output_for
         _exit(130)
 
 
-@click.group("config", invoke_without_command=True)
+@click.group(
+    "config",
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 @click.pass_context
 def config_group(ctx: click.Context) -> None:
     """Inspect merged effective configuration (flag > env > file > defaults)."""
@@ -315,7 +330,11 @@ def version_cmd() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``stx``; returns a process exit code."""
+    """Entry point for ``stx``; returns a process exit code (for scripts and ``python -m``).
+
+    Using ``standalone_mode=False`` keeps Click from calling ``sys.exit`` inside the
+    library so embedders can inspect the integer code.
+    """
     try:
         cli.main(args=argv, prog_name="stx", standalone_mode=False)
         return 0
@@ -329,6 +348,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def main_backtest_compat(argv: list[str] | None = None) -> int:
-    """Legacy ``stx-backtest`` entry: equivalent to ``stx backtest …``."""
+    """Legacy ``stx-backtest`` entry: equivalent to ``stx backtest …``.
+
+    Preserved so packaging, docs, and user muscle memory keep working while the
+    preferred invocation is the ``backtest`` subcommand on ``stx``.
+    """
     args = list(sys.argv[1:] if argv is None else argv)
     return main(["backtest", *args])

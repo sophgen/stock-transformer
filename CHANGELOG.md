@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `stx fetch --symbols`: validate non-empty tokens and normalize to uppercase (Click passes the full tuple to `multiple=True` callbacks); `stx config -h` matches root `-h`/`--help`.
+- Dev install (`pip install -e ".[dev]"` / `uv sync --extra dev`) now includes **Rich** and **click-man** in the same extra (aligned with CI `make man-check`).
+- Expanded “why” docstrings on CLI modules, `prepare_backtest_config`, and README per-command examples.
 - CLI package layout: `src/stock_transformer/cli/` (`app`, `services`, `output`, `logging_config`, `progress_display`, `validators`, `sigint`); `python -m stock_transformer.cli` entry via `cli/__main__.py`; `--device` empty-string validation.
 - Documentation: README table of contents, environment-variable table, CLI package layout; CONTRIBUTING layering and testing notes.
 - CLI: `stx config show` / `stx config diff`; `backtest --output-format`, `--dry-run`, `--seed`; global `--log-file` / `--no-color` / `--rich`; expanded `STX_*` env vars (`STX_SEED`, `STX_BATCH_SIZE`, `STX_LOG_LEVEL`, `STX_CONFIG`).

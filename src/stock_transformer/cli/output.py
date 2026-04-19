@@ -38,6 +38,7 @@ def use_color(ctx: click.Context | None) -> bool:
 
 
 def style_text(text: str, *, fg: str, ctx: click.Context | None) -> str:
+    """Apply ANSI color only when the user did not disable styling (TTY-friendly defaults)."""
     if not use_color(ctx):
         return text
     return click.style(text, fg=fg)
@@ -90,6 +91,7 @@ def emit_backtest_result(
 
 
 def fmt_metric_cell(x: Any) -> str:
+    """Render a numeric metric or an em dash placeholder for sweep tables."""
     return "—" if x is None else f"{float(x):.3f}"
 
 
@@ -118,6 +120,7 @@ def format_sweep_table(merged: dict[str, Any]) -> str:
 
 
 def pydantic_default_for_field(field_info: Any) -> Any:
+    """Resolve a field's default for ``config diff`` (factory vs static default)."""
     if field_info.default_factory is not None:
         return field_info.default_factory()
     if field_info.default is not PydanticUndefined:

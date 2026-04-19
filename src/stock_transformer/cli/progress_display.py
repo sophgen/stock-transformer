@@ -10,7 +10,12 @@ from stock_transformer.backtest.progress import ProgressCallback
 
 
 class StxCliProgress:
-    """Implements ``ProgressCallback`` using plain stderr or Rich when available."""
+    """Implements ``ProgressCallback`` using plain stderr or Rich when available.
+
+    Training code only sees the protocol in :mod:`stock_transformer.backtest.progress`;
+    this class is the optional human-facing adapter so CI and headless runs stay quiet
+    when Rich is off or missing.
+    """
 
     def __init__(self, *, use_rich: bool) -> None:
         self._use_rich = use_rich

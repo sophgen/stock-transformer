@@ -124,7 +124,7 @@ Both take `-c/--config` (same default as `stx backtest`).
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--cache-dir` | `data` | Root for `raw/` and `canonical/`. |
-| `--symbols` | MSTR IBIT COIN QQQ | Repeatable symbol list. |
+| `--symbols` | MSTR IBIT COIN QQQ | Repeatable symbol list (strip + uppercased). Empty tokens are rejected. |
 | `--refresh` | off | Force re-download and overwrite canonical CSV. |
 
 ### `stx sweep`
@@ -172,18 +172,36 @@ Unknown YAML keys log a **warning** (possible typo) but are ignored after valida
 
 ## Example commands
 
+One minimal example per command (combine flags as needed):
+
 ```bash
-# Validate config before a long run
-uv run stx validate -c configs/universe.yaml
+# Root help (same as: stx -h)
+uv run stx --help
 
-# Verbose single-symbol run
-uv run stx -v backtest --synthetic -c configs/default.yaml
+# Walk-forward backtest (synthetic; no API key)
+uv run stx backtest --synthetic
+uv run stx backtest --synthetic -c configs/universe.yaml --output-format json
 
-# Fetch only pilot symbols, custom cache
+# Effective config after merge + validation (stdout is YAML)
+uv run stx config show -c configs/default.yaml
+
+# Keys that differ from Pydantic defaults for this experiment mode
+uv run stx config diff -c configs/universe.yaml
+
+# Download daily OHLCV into ./data (requires ALPHAVANTAGE_API_KEY unless you only inspect help)
 uv run stx fetch --cache-dir data --symbols MSTR --symbols QQQ
 
-# Loss sweep (universe config)
+# Compare ranking losses on a universe config
 uv run stx sweep --synthetic -c configs/universe.yaml
+
+# Fast CI check: validate YAML only
+uv run stx validate -c configs/universe.yaml
+
+# Version string (also: stx --version)
+uv run stx version
+
+# Verbose single-symbol run (INFO logs on stderr)
+uv run stx -v backtest --synthetic -c configs/default.yaml
 ```
 
 ## Shell completion (bash, zsh, fish)

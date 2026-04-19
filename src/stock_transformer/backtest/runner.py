@@ -319,7 +319,12 @@ def prepare_backtest_config(
     device: str | None = None,
     seed: int | None = None,
 ) -> dict[str, Any]:
-    """Load YAML, apply ``STX_*`` env overrides and optional CLI overrides, then Pydantic-coerce."""
+    """Load YAML, apply ``STX_*`` env overrides and optional CLI overrides, then Pydantic-coerce.
+
+    Precedence for overlapping keys: values from the file are merged first, then
+    non-empty ``STX_*`` env vars (:func:`~stock_transformer.backtest.env_config.apply_stx_env_overrides`),
+    then ``device`` / ``seed`` from this function's keyword arguments (CLI flags).
+    """
     cfg = load_config(path)
     apply_stx_env_overrides(cfg)
     if device is not None and str(device).strip():

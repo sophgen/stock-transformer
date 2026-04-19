@@ -1,4 +1,8 @@
-"""Allow ``python -m stock_transformer.cli`` (used in tests and docs)."""
+"""Allow ``python -m stock_transformer.cli`` (used in tests and docs).
+
+Mirrors the console-script entry point so subprocess tests exercise the same import
+graph as ``stx`` without requiring a venv ``bin`` directory on ``PATH``.
+"""
 
 from __future__ import annotations
 
