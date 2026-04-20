@@ -114,6 +114,7 @@ def run_experiment(
                 use_adjusted_weekly=bool(config.get("use_adjusted_weekly", True)),
                 use_adjusted_monthly=bool(config.get("use_adjusted_monthly", True)),
                 intraday_month=config.get("intraday_month"),
+                intraday_months=config.get("intraday_months"),
                 intraday_extended_hours=bool(config.get("intraday_extended_hours", False)),
                 intraday_outputsize=str(config.get("intraday_outputsize", "full")),
                 daily_outputsize=str(config.get("daily_outputsize", "full")),

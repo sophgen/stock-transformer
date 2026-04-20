@@ -57,6 +57,7 @@ class SingleSymbolExperimentConfig(BaseModel):
     use_adjusted_weekly: bool = True
     use_adjusted_monthly: bool = True
     intraday_month: str | None = None
+    intraday_months: list[str] | None = None
     intraday_extended_hours: bool = False
     intraday_outputsize: str = "full"
     daily_outputsize: str = "full"
@@ -68,6 +69,16 @@ class SingleSymbolExperimentConfig(BaseModel):
     lr_scheduler_min_lr: float = Field(default=1e-7, ge=0.0)
 
     inference_batch_size: int = Field(default=256, ge=1)
+
+    @field_validator("intraday_months", mode="before")
+    @classmethod
+    def coerce_intraday_months(cls, v: Any) -> list[str] | None:
+        if v is None:
+            return None
+        if not isinstance(v, (list, tuple)):
+            raise TypeError("intraday_months must be a list of YYYY-MM strings")
+        out = [str(x).strip() for x in v if str(x).strip()]
+        return out or None
 
     @model_validator(mode="before")
     @classmethod
@@ -149,6 +160,7 @@ class UniverseExperimentConfig(BaseModel):
     use_adjusted_weekly: bool = True
     use_adjusted_monthly: bool = True
     intraday_month: str | None = None
+    intraday_months: list[str] | None = None
     intraday_extended_hours: bool = False
     intraday_outputsize: str = "full"
     daily_outputsize: str = "full"
@@ -160,6 +172,16 @@ class UniverseExperimentConfig(BaseModel):
     lr_scheduler_min_lr: float = Field(default=1e-7, ge=0.0)
 
     inference_batch_size: int = Field(default=128, ge=1)
+
+    @field_validator("intraday_months", mode="before")
+    @classmethod
+    def coerce_universe_intraday_months(cls, v: Any) -> list[str] | None:
+        if v is None:
+            return None
+        if not isinstance(v, (list, tuple)):
+            raise TypeError("intraday_months must be a list of YYYY-MM strings")
+        out = [str(x).strip() for x in v if str(x).strip()]
+        return out or None
 
     @model_validator(mode="before")
     @classmethod
