@@ -363,6 +363,41 @@ def test_stx_fetch_help():
     assert "cache-dir" in result.output.lower() or "--cache-dir" in result.output
 
 
+def test_stx_data_fetch_matches_fetch(monkeypatch):
+    """``stx data fetch`` uses the same command object as ``stx fetch`` (shared flags)."""
+    import stock_transformer.cli.commands.fetch as fetch_mod
+
+    calls: list[str] = []
+
+    def capture(cache_dir, symbols, *, refresh):
+        calls.append("run")
+
+    monkeypatch.setattr(fetch_mod, "run_fetch", capture)
+    runner = CliRunner()
+    r1 = runner.invoke(cli, ["fetch", "--symbols", "MSTR"], catch_exceptions=False)
+    r2 = runner.invoke(cli, ["data", "fetch", "--symbols", "MSTR"], catch_exceptions=False)
+    assert r1.exit_code == 0 and r2.exit_code == 0
+    assert len(calls) == 2
+
+
+def test_stx_completion_bash_prints_script():
+    runner = CliRunner()
+    r = runner.invoke(cli, ["completion", "bash"], catch_exceptions=False)
+    assert r.exit_code == 0
+    out = r.stdout or ""
+    assert "_STX_COMPLETE" in out and "stx" in out.lower()
+
+
+def test_main_keyboard_interrupt_returns_130(monkeypatch):
+    from stock_transformer.cli import app as app_mod
+
+    def raise_ki(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(app_mod.cli, "main", raise_ki)
+    assert app_mod.main([]) == 130
+
+
 def test_fetch_rejects_blank_symbol_after_strip():
     runner = CliRunner()
     for args in (["fetch", "--symbols", ""], ["fetch", "--symbols", "   "]):

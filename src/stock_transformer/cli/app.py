@@ -72,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for ``stx``; returns a process exit code (for scripts and ``python -m``).
 
     Using ``standalone_mode=False`` keeps Click from calling ``sys.exit`` inside the
-    library so embedders can inspect the integer code.
+    library so embedders can inspect the integer code. :exc:`KeyboardInterrupt` maps to
+    **130** when it reaches this boundary (subcommands normally catch it after signal
+    handlers translate SIGINT).
     """
     try:
         cli.main(args=argv, prog_name="stx", standalone_mode=False)
@@ -84,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(code, int):
             return code
         return 1
+    except KeyboardInterrupt:
+        return 130
 
 
 def main_backtest_compat(argv: list[str] | None = None) -> int:

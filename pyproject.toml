@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Leakage-safe autoregressive candle forecasting and walk-forward backtest harness."
 readme = "README.md"
 requires-python = ">=3.11"
+# Transitive versions for reproducible installs are pinned in uv.lock (commit it when bumping deps).
 keywords = ["cli", "machine-learning", "pytorch", "stocks", "walk-forward", "transformer", "backtest"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -30,7 +31,7 @@ dependencies = [
   "pyarrow>=15",
   "pydantic>=2.6",
   "python-dotenv>=1.2.2",
-  "click>=8.1",
+  "click>=8.1,<9",
 ]
 
 [project.optional-dependencies]

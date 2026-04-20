@@ -3,7 +3,8 @@
 The package splits parsing (:mod:`stock_transformer.cli.app` and
 :mod:`stock_transformer.cli.commands`), presentation (:mod:`stock_transformer.cli.output`),
 and runner orchestration (:mod:`stock_transformer.cli.services`) so training code stays
-free of CLI imports.
+free of CLI imports. Subcommands include ``backtest``, ``config``, ``fetch`` (also under
+``data fetch``), ``sweep``, ``validate``, ``version``, and ``completion``.
 
 Symbols re-exported from :mod:`stock_transformer.backtest.runner` (and related modules) exist so
 tests and scripts can ``patch("stock_transformer.cli.run_experiment", ...)`` without reaching into

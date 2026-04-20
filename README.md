@@ -85,7 +85,7 @@ Global options (before the subcommand):
 
 During training, **`stx backtest`** prints per-fold and per-epoch lines on stderr (suppressed by `-q`). Hooks live in `backtest/progress.py` and are wired from the CLI.
 
-Subcommands (by theme: **experiments** — `backtest`, `sweep`; **configuration** — `config`; **data** — `fetch`; **meta** — `validate`, `version`):
+Subcommands (by theme: **experiments** — `backtest`, `sweep`; **configuration** — `config`; **data** — `fetch` or `data fetch`; **meta** — `validate`, `version`, `completion`):
 
 | Command | Purpose |
 |---------|---------|
@@ -93,9 +93,11 @@ Subcommands (by theme: **experiments** — `backtest`, `sweep`; **configuration*
 | `stx config show` | Print merged, validated config as YAML (`-c` path). |
 | `stx config diff` | Print keys that differ from Pydantic defaults for that mode. |
 | `stx fetch` | Download daily-adjusted OHLCV for the default pilot universe into `cache_dir`. |
+| `stx data fetch` | Same as `stx fetch` (grouped under `data` for discoverability). |
 | `stx sweep` | Run universe experiment for each ranking loss and merge `by_loss` (see `backtest/loss_sweep.py`). |
 | `stx validate` | Load and validate YAML only (no training). Useful in CI. |
 | `stx version` | Same information as `stx --version`. |
+| `stx completion` | Print a shell tab-completion script (`bash`, `zsh`, or `fish`). |
 
 ### `stx backtest`
 
@@ -119,13 +121,21 @@ Subcommands (by theme: **experiments** — `backtest`, `sweep`; **configuration*
 
 Both take `-c/--config` (same default as `stx backtest`).
 
-### `stx fetch`
+### `stx fetch` / `stx data fetch`
+
+The same command is available as **`stx fetch`** or **`stx data fetch`** (identical flags).
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--cache-dir` | `data` | Root for `raw/` and `canonical/`. |
 | `--symbols` | MSTR IBIT COIN QQQ | Repeatable symbol list (strip + uppercased). Empty tokens are rejected. |
 | `--refresh` | off | Force re-download and overwrite canonical CSV. |
+
+### `stx completion`
+
+| Argument | Description |
+|----------|-------------|
+| `SHELL` | One of `bash`, `zsh`, `fish`. Prints a script to stdout; source it from your shell profile (or save to e.g. `/etc/bash_completion.d/stx`). |
 
 ### `stx sweep`
 
@@ -191,6 +201,10 @@ uv run stx config diff -c configs/universe.yaml
 
 # Download daily OHLCV into ./data (requires ALPHAVANTAGE_API_KEY unless you only inspect help)
 uv run stx fetch --cache-dir data --symbols MSTR --symbols QQQ
+uv run stx data fetch --cache-dir data --symbols MSTR
+
+# Bash completion script (install to ~/.bashrc or similar)
+uv run stx completion bash | head -3
 
 # Compare ranking losses on a universe config
 uv run stx sweep --synthetic -c configs/universe.yaml
@@ -207,18 +221,25 @@ uv run stx -v backtest --synthetic -c configs/default.yaml
 
 ## Shell completion (bash, zsh, fish)
 
-Generate a completion script (requires the `stx` command on your `PATH` or `uv run stx`):
+**Preferred:** use the built-in generator (prints the same Click completion script as the manual env-var flow):
+
+```bash
+stx completion bash > ~/.stx-complete.bash
+echo 'source ~/.stx-complete.bash' >> ~/.bashrc
+```
+
+Alternatively, set the completion env var and run `stx` (requires `stx` on your `PATH` or `uv run stx`):
 
 ```bash
 _STX_COMPLETE=bash_source stx > ~/.stx-complete.bash
 echo 'source ~/.stx-complete.bash' >> ~/.bashrc
 ```
 
-Committed scripts for reference: `completions/stx.bash`, `completions/stx.zsh`, `completions/stx.fish` (regenerate with the same pattern using `zsh_source` or `fish_source`).
+Committed stubs for reference: `completions/stx.bash`, `completions/stx.zsh`, `completions/stx.fish` (regenerate with `stx completion <shell>` or the `_STX_COMPLETE=…` pattern).
 
 ## Man pages
 
-`make man` generates `man/stx.1` plus per-command pages (for example `stx-backtest(1)`, `stx-fetch(1)`) via **click-man** (dev dependency). CI runs **`make man-check`** so the committed `stx.1` stays in sync.
+`make man` generates `man/*.1` (root `stx.1` plus per-command pages such as `stx-backtest.1`, `stx-fetch.1`, `stx-data.1`) via **click-man** (dev dependency). CI runs **`make man-check`** so the committed `man/` tree matches a fresh click-man run.
 
 ```bash
 make man
@@ -274,7 +295,7 @@ The `stx` command is implemented under `src/stock_transformer/cli/` so parsing, 
 | Module | Responsibility |
 |--------|----------------|
 | `cli/app.py` | Root Click group, global options, `register_all_commands`, `main` / `main_backtest_compat`. |
-| `cli/commands/` | One module per subcommand group (`backtest`, `fetch`, `sweep`, `config`, `validate`, `version`) — options and thin handlers only. |
+| `cli/commands/` | One module per subcommand (`backtest`, `fetch` + `data` group, `sweep`, `config`, `validate`, `version`, `completion`) — options and thin handlers only. |
 | `cli/services.py` | Calls runners via the `stock_transformer.cli` package so tests can patch `run_experiment` and friends. |
 | `cli/output.py` | Text/JSON summaries, sweep tables, version string. |
 | `cli/logging_config.py` | Root logging for `-v` / `-q` / `--log-file`. |

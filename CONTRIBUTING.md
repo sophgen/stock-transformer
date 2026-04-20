@@ -41,7 +41,7 @@ without editing YAML.
 ```text
 stx (cli.app + cli.commands)  →  services (orchestration)  →  prepare_backtest_config → run_experiment | run_universe_experiment
         │                      │
-        │                      └── fetch / sweep / validate
+        │                      └── fetch (and data fetch) / sweep / validate / completion
         └── output, logging, progress (no training imports)
                       ↓
          single-symbol runner          universe_runner
@@ -67,8 +67,9 @@ Library callers can use `prepare_backtest_config` plus `run_experiment` / `run_u
 
 - **Ruff** for lint + format; **mypy** with `disallow_untyped_defs` on `src/stock_transformer`.
 - Prefer **`logging`** in library modules; the CLI prints short summaries and tables.
-- **Click:** short and long flags (`-c`/`--config`, `-o`/`--output-format` on `backtest` and `sweep`), sensible defaults, `BadParameter` for fixable input mistakes before heavy work.
-- **Signals:** long commands install handlers for SIGINT (`KeyboardInterrupt` → **130**) and SIGTERM (`SystemExit(143)`), so users and orchestrators get clean exits without tracebacks.
+- **Click:** short and long flags (`-c`/`--config`, `-o`/`--output-format` on `backtest` and `sweep`), sensible defaults, `BadParameter` for fixable input mistakes before heavy work. The **`fetch`** command object is registered on the root group and under **`data`** so both `stx fetch` and `stx data fetch` stay identical without duplicating handlers.
+- **Signals:** long commands install handlers for SIGINT (`KeyboardInterrupt` → **130**) and SIGTERM (`SystemExit(143)`), so users and orchestrators get clean exits without tracebacks. `stock_transformer.cli.app.main` also maps uncaught `KeyboardInterrupt` to **130** for embedders.
+- **Completion:** `stx completion {bash,zsh,fish}` uses Click’s `click.shell_completion` to print installable scripts; keep it lazily importing `cli` inside the callback to avoid import cycles during command registration.
 - Avoid bare `except` without a comment; if you must catch broadly, state why (e.g. fold isolation).
 
 ## Adding a model or loss

@@ -16,4 +16,4 @@ man-check: man
 	uv run click-man stx --target /tmp/stx-man-check \
 		--man-version $$(grep '^version = ' pyproject.toml | sed 's/.*"\(.*\)".*/\1/') \
 		--man-date $(MAN_DATE)
-	diff -q man/stx.1 /tmp/stx-man-check/stx.1
+	diff -rq man /tmp/stx-man-check
