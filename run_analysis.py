@@ -3,10 +3,10 @@ Simplified MSTR vs IBIT ranking analysis using cached daily data.
 Shows the workflow and output structure.
 """
 import json
-import pandas as pd
-from pathlib import Path
 from datetime import datetime
+
 import numpy as np
+import pandas as pd
 
 # Load cached data
 mstr_data = pd.read_csv('data/canonical/timeframe=daily/symbol=MSTR/part-000.csv')
@@ -22,8 +22,8 @@ ibit_data['timestamp'] = pd.to_datetime(ibit_data['timestamp'])
 
 # Align timestamps
 merged = mstr_data[['timestamp', 'close']].merge(
-    ibit_data[['timestamp', 'close']], 
-    on='timestamp', 
+    ibit_data[['timestamp', 'close']],
+    on='timestamp',
     suffixes=('_mstr', '_ibit')
 )
 
@@ -41,7 +41,7 @@ win_rate = merged['mstr_wins'].sum() / len(merged) * 100
 avg_mstr_return = merged['mstr_return'].mean() * 100
 avg_ibit_return = merged['ibit_return'].mean() * 100
 
-print(f"\n📈 Performance Summary (Daily):")
+print("\n📈 Performance Summary (Daily):")
 print(f"   MSTR avg daily return: {avg_mstr_return:.3f}%")
 print(f"   IBIT avg daily return: {avg_ibit_return:.3f}%")
 print(f"   MSTR outperformance rate: {win_rate:.1f}%")
@@ -63,7 +63,7 @@ actual_ranks.columns = ['timestamp', 'actual_rank']
 spearman_corr = merged[['pred_mstr_rank', 'actual_mstr_rank']].corr(method='spearman').iloc[0, 1]
 top1_hit = (merged['pred_mstr_rank'] == merged['actual_mstr_rank']).mean()
 
-print(f"\n🎯 Ranking Metrics (Synthetic Model):")
+print("\n🎯 Ranking Metrics (Synthetic Model):")
 print(f"   Spearman correlation: {spearman_corr:.3f}")
 print(f"   Top-1 hit rate: {top1_hit:.1%}")
 
@@ -110,7 +110,7 @@ with open(output_file, 'w') as f:
     json.dump(results, f, indent=2)
 
 print(f"\n✅ Results saved to {output_file}")
-print(f"\n📊 Key Results:")
+print("\n📊 Key Results:")
 print(f"   Spearman Mean: {results['aggregate']['spearman_mean_mean']:.3f}")
 print(f"   Top-1 Hit Rate: {results['aggregate']['ndcg1_mean_mean']:.1%}")
 print(f"   Portfolio P&L: {results['aggregate']['portfolio_sim']['total_return']:.2%}")
