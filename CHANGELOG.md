@@ -7,46 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-19
+
 ### Added
 
-- CLI: `stx data` group with `fetch` (same `Command` instance as top-level `stx fetch`); `stx completion {bash,zsh,fish}` emits Click shell completion scripts; `stock_transformer.cli.app.main` returns **130** on uncaught `KeyboardInterrupt`.
-- Makefile: `man-check` diffs the full `man/` directory against click-man output (not only `stx.1`).
-- CLI: `stock_transformer.cli.commands` package — one module per subcommand (`backtest`, `fetch`, `sweep`, `config`, `validate`, `version`) with shared `cli_exit` helper; root `app.py` only defines the group, globals, and `register_all_commands`.
-- CLI: SIGTERM handler exits with **143** (containers / process managers); ISO-like timestamps in default stderr log format.
-- CLI: `-o` as a short form of `--output-format` on `stx backtest` and `stx sweep`; `short_help` on root and `stx config` groups; `--cache-dir` validated as a non-empty path before fetch runs.
-- PyPI-oriented `keywords` and `classifiers` in `pyproject.toml`.
-- Docstrings clarifying config merge order in `prepare_backtest_config`, `run_from_config_path`, and `env_config`.
-- `stx fetch --symbols`: validate non-empty tokens and normalize to uppercase (Click passes the full tuple to `multiple=True` callbacks); `stx config -h` matches root `-h`/`--help`.
-- Dev install (`pip install -e ".[dev]"` / `uv sync --extra dev`) now includes **Rich** and **click-man** in the same extra (aligned with CI `make man-check`).
-- Expanded “why” docstrings on CLI modules, `prepare_backtest_config`, and README per-command examples.
-- CLI package layout: `src/stock_transformer/cli/` (`app`, `services`, `output`, `logging_config`, `progress_display`, `validators`, `sigint`); `python -m stock_transformer.cli` entry via `cli/__main__.py`; `--device` empty-string validation.
-- Documentation: README table of contents, environment-variable table, CLI package layout; CONTRIBUTING layering and testing notes.
-- CLI: `stx config show` / `stx config diff`; `backtest --output-format`, `--dry-run`, `--seed`; global `--log-file` / `--no-color` / `--rich`; expanded `STX_*` env vars (`STX_SEED`, `STX_BATCH_SIZE`, `STX_LOG_LEVEL`, `STX_CONFIG`).
-- `ProgressCallback` + per-fold/per-epoch stderr lines; `StxResult` helper; `prepare_backtest_config` and explicit universe vs single-symbol dispatch; `run_universe_from_config_path` / `run_single_symbol_from_config_path`; dry-run fold plans for both modes.
-- Sweep text table output; subprocess helpers in tests for exit codes 2 and 130; `CliRunner(catch_exceptions=False)` fixture; fast CliRunner universe test.
-- `man/stx.1` via `click-man`; `Makefile` targets `man` / `man-check`; `Dockerfile`; Dependabot; macOS CI smoke; **mypy** `disallow_untyped_defs`.
-- Click-based CLI `stx` with subcommands: `backtest`, `fetch`, `sweep`, `validate`, `version`.
-- Global flags `-v` / `-vv`, `-q`, and `--version`; SIGINT handling without noisy tracebacks.
-- `stock_transformer.device.resolve_device` module; `batch_predict` on classifier and ranker models.
-- Shared `RunContext`, artifact helpers, `STX_*` env overrides, and config typo warnings for unknown YAML keys.
-- `inference_batch_size` in validated configs; `py.typed` marker for type consumers.
-- `CONTRIBUTING.md`, shell completion notes under `completions/`, and optional GitHub Actions release workflow.
+- **CLI package** — monolithic `cli.py` replaced by `stock_transformer.cli` package split into
+  `app`, `commands/` (one module per subcommand), `services`, `output`, `logging_config`,
+  `progress_display`, `validators`, and `sigint`; both `stx` and `stx-backtest` entry points
+  preserved unchanged.
+- **`stx data` group** — `stx data fetch` mirrors top-level `stx fetch` (same `Command` instance,
+  identical flags) for discoverability alongside other future data subcommands.
+- **`stx completion`** — prints an installable shell tab-completion script for `bash`, `zsh`, or
+  `fish` via Click's `shell_completion` API; committed stubs under `completions/`.
+- **`stx validate`** — fast Pydantic-only YAML validation without allocating GPUs; designed for CI
+  `stx validate -c configs/universe.yaml` gates.
+- **`stx version`** — explicit subcommand mirroring `stx --version` for users who prefer a
+  subcommand form.
+- **`stx config show` / `stx config diff`** — inspect the fully-merged effective config (after
+  env overrides and Pydantic coercion) as YAML, or print only keys that differ from model
+  defaults; both respect `-c/--config`.
+- **`stx sweep`** — run walk-forward for each ranking loss (`mse`, `listnet`, `approx_ndcg`) and
+  merge `by_loss` summaries; text table or JSON output.
+- **Output format flags** — `-o`/`--output-format text|json` on `stx backtest` and `stx sweep`;
+  `text` mode is the default one-liner; `json` emits the full summary dict for scripting.
+- **`--dry-run`** on `stx backtest` — resolves data and writes `folds.json`/`summary.json`, prints
+  the fold plan to stdout (YAML fold boundaries), then exits without training.
+- **`--seed`** flag on `stx backtest` — CLI override that wins over `STX_SEED` and YAML `seed`.
+- **`--device`** flag on `stx backtest` — validates non-empty string; wins over `STX_DEVICE` and
+  YAML `device`.
+- **`--log-file`** global flag — append logs to a file in addition to stderr.
+- **`--no-color`** global flag (and `NO_COLOR` env var) — disable ANSI styling for machine-friendly
+  CI output.
+- **`--rich`** global flag — opt-in Rich progress rendering for fold/epoch lines on stderr.
+- **Signal handling** — `SIGINT` exits with **130** (no traceback); `SIGTERM` exits with **143**
+  (container-friendly); `app.main` maps uncaught `KeyboardInterrupt` to **130** for embedders.
+- **Config precedence** — CLI flags > `STX_*` env vars > YAML file > Pydantic defaults, applied
+  inside `prepare_backtest_config` via `apply_stx_env_overrides`.
+- **Expanded `STX_*` env vars** — `STX_CONFIG`, `STX_SEED`, `STX_BATCH_SIZE`, `STX_LOG_LEVEL`
+  added alongside the existing `STX_DEVICE`, `STX_CACHE_DIR`, `STX_ARTIFACTS_DIR`, `STX_EPOCHS`.
+- **`ProgressCallback`** — per-fold and per-epoch stderr lines from `backtest/progress.py`;
+  `StxCliProgress` wires Rich (optional) or plain text without importing Click in the training loop.
+- **`StxResult`** type helper in `cli/types.py`.
+- **Universe dispatch** — `prepare_backtest_config` returns the merged dict; `services.run_backtest`
+  selects `run_universe_experiment` vs `run_experiment` on `experiment_mode`.
+- **Library wrappers** — `run_from_config_path`, `run_single_symbol_from_config_path`,
+  `run_universe_from_config_path` exported from `stock_transformer.backtest`.
+- **Subprocess test helpers** — `tests/cli_subprocess_helpers/backtest_exit_2.py` and
+  `backtest_exit_130.py` for acceptance-level exit-code tests.
+- **`CliRunner(catch_exceptions=False)` fixture** (`stx_runner`) and fast CliRunner universe test
+  using monkeypatched runner.
+- **Sweep text table** — fixed-column terminal output for `stx sweep` (no Rich dependency).
+- **Man pages** — `man/*.1` generated by `click-man`; `Makefile` targets `man` / `man-check`;
+  CI runs `make man-check` to assert the committed tree matches a fresh click-man run.
+- **`--man-date` pinning** in `Makefile` keeps committed man pages stable across re-generations.
+- **Dockerfile** — self-contained image for containerised usage.
+- **Dependabot** — `.github/dependabot.yml` for GitHub Actions and pip updates.
+- **macOS smoke job** — `smoke-macos` in CI runs `pytest -q tests/test_cli_dispatch.py`.
+- **Release workflow** — `.github/workflows/release.yml` builds and publishes on `v*` tags when
+  `PYPI_API_TOKEN` is configured.
+- **mypy** — `disallow_untyped_defs` enforced on `src/stock_transformer`; CI fails on type errors.
+- **PyPI metadata** — `keywords` and `classifiers` in `pyproject.toml` for package discoverability.
+- **Dev extras** — `rich` and `click-man` added to the `[dev]` extra alongside the existing tools.
+- **Docstrings** — "why not what" inline docstrings on all CLI modules, `prepare_backtest_config`,
+  `run_from_config_path`, `env_config`, and training helpers.
+- **Input validation** — `--symbols` rejects blank tokens (after strip); `--cache-dir` rejects
+  whitespace-only paths via Click callback; `--symbols` normalised to uppercase before dispatch.
+- **`stx config -h`** — `config` group and root group both accept `-h` as `--help` alias.
+- **`short_help`** on root group and `stx config` group for compact `--help` listings.
 
 ### Changed
 
-- Monolithic `cli.py` replaced by the `stock_transformer.cli` package (same entry points: `stx`, `stx-backtest`).
-- Entry point `stx` (legacy `stx-backtest` forwards to `stx backtest`).
-- Training loops share `_run_supervised_epochs`; structured logging in runners.
+- Entry point `stx` now delegates to the `cli` package; legacy `stx-backtest` forwards to
+  `stx backtest` with the same flag set.
+- Training loops share `_run_supervised_epochs` to eliminate duplication between single-symbol
+  and universe runners.
+- Structured logging added to runners; ISO-like timestamps in the default stderr log format.
 
 ### Deprecated
 
-- `CandleTransformerClassifier` emits `DeprecationWarning` (use `CandleTransformer`).
+- `CandleTransformerClassifier` emits `DeprecationWarning`; use `CandleTransformer` instead.
 
 ## [0.1.0] - 2026-04-19
 
 ### Added
 
 - Single-symbol multi-timeframe candle transformer with walk-forward evaluation.
-- Universe / cross-sectional ranker mode with Spearman, Kendall, NDCG, baselines, and optional portfolio simulation.
+- Universe / cross-sectional ranker mode with Spearman, Kendall, NDCG, baselines, and optional
+  portfolio simulation.
 - Alpha Vantage ingestion with caching; synthetic data for tests and offline runs.
 - Pydantic-validated YAML configs; artifact layout (`summary.json`, per-fold logs, predictions CSV).
