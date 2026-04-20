@@ -151,6 +151,7 @@ class AlphaVantageClient:
                 time.sleep(backoff)
                 continue
             raise RuntimeError(f"Alpha Vantage API: {err}")
+        raise AssertionError("unreachable: loop always returns or raises")
 
 
 def fetch_candles_for_timeframe(
