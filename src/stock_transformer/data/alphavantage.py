@@ -106,7 +106,9 @@ class AlphaVantageClient:
         self.api_key = api_key or os.environ.get("ALPHAVANTAGE_API_KEY", "")
         self.cache_root = Path(cache_dir)
         self.min_interval_sec = (
-            float(min_interval_sec) if min_interval_sec is not None else _env_float(_ENV_MIN_INTERVAL, DEFAULT_MIN_INTERVAL_SEC)
+            float(min_interval_sec)
+            if min_interval_sec is not None
+            else _env_float(_ENV_MIN_INTERVAL, DEFAULT_MIN_INTERVAL_SEC)
         )
         self.query_retries = (
             int(query_retries) if query_retries is not None else _env_int(_ENV_QUERY_RETRIES, DEFAULT_QUERY_RETRIES)
