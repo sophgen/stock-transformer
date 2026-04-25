@@ -1,62 +1,17 @@
-# Multi-timeframe autoregressive candle transformer — default config.
+symbols: ["SPY", "QQQ", "AAPL", "MSFT", "GOOGL"]
+target_symbol: "SPY"
+lookback: 30
 
-symbol: "IBM"
+train_pct: 0.7
+val_pct: 0.15
 
-# Timeframes to ingest (all become input tokens)
-timeframes:
-  - "monthly"
-  - "weekly"
-  - "daily"
-  - "60min"
-
-# Which timeframe we predict the *next candle* for
-prediction_timeframe: "daily"
-
-# Per-timeframe lookback (how many past candles to include as tokens)
-lookbacks:
-  monthly: 12
-  weekly: 16
-  daily: 32
-  60min: 48
-
-# Max token-sequence length (pad / truncate to this)
-max_seq_len: 256
-
-# Intraday options
-intraday_month: null
-intraday_extended_hours: false
-intraday_outputsize: "full"
-daily_outputsize: "full"
-use_adjusted_daily: true
-use_adjusted_weekly: true
-use_adjusted_monthly: true
-cache_dir: "data"
-
-# Walk-forward split (in sample count)
-train_bars: 400
-val_bars: 80
-test_bars: 80
-step_bars: 80
-
-# Model
 d_model: 64
 nhead: 4
-num_layers: 2
-dim_feedforward: 128
+num_layers: 3
 dropout: 0.1
-epochs: 10
+
+epochs: 50
 batch_size: 32
-learning_rate: 0.0005
-
-# Combined loss weighting: alpha * regression_MSE + (1-alpha) * direction_BCE
-loss_alpha: 0.5
-
-# "auto" picks MPS on Apple Silicon, CUDA on NVIDIA, else CPU
-device: "auto"
+learning_rate: 0.001
 seed: 42
-
-default_threshold: 0.5
-artifacts_dir: "artifacts"
-
-# Synthetic data size (only used with --synthetic flag)
-synthetic_n_daily: 1200
+cache_dir: "data"
