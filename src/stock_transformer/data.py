@@ -21,6 +21,14 @@ DEFAULT_QUERY_RETRIES: Final = 5
 DEFAULT_REQUESTS_PER_MINUTE: Final = 5
 WINDOW_SEC: Final = 60.0
 
+# Internal function names sometimes differ from AlphaVantage's actual `function=` query
+# param. We keep the internal naming (used for cache paths, parsers, and parquet outputs)
+# stable and only rewrite the wire value here. Example: AV exposes the company-overview
+# endpoint as `OVERVIEW`, but internally we use `COMPANY_OVERVIEW` for clarity.
+_AV_WIRE_FUNCTION_OVERRIDES: Final[dict[str, str]] = {
+    "COMPANY_OVERVIEW": "OVERVIEW",
+}
+
 _log = logger
 
 
@@ -31,6 +39,16 @@ def _slug(params: dict[str, Any]) -> str:
 
 def _slim_params(full: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in full.items() if k != "apikey"}
+
+
+def _wire_params(full: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``full`` with the ``function`` param mapped to its AV wire name."""
+    fn = full.get("function")
+    if isinstance(fn, str) and fn in _AV_WIRE_FUNCTION_OVERRIDES:
+        out = dict(full)
+        out["function"] = _AV_WIRE_FUNCTION_OVERRIDES[fn]
+        return out
+    return full
 
 
 def _cleanup_tmp_in_raw(cache_root: Path) -> None:
@@ -222,10 +240,11 @@ class AlphaVantageClient:
         self, function: str, full: dict[str, Any]
     ) -> dict[str, Any]:
         last_exc: Exception | None = None
+        wire = _wire_params(full)
         for attempt in range(max(1, self.retries)):
             self._limiter.acquire()
             try:
-                resp = self._session.get(BASE_URL, params=full, timeout=60)
+                resp = self._session.get(BASE_URL, params=wire, timeout=60)
                 if resp.status_code >= 500:
                     raise requests.HTTPError(
                         f"HTTP {resp.status_code}", response=resp
@@ -340,7 +359,7 @@ class AlphaVantageClient:
 
         try:
             self._limiter.acquire()
-            resp = self._session.get(BASE_URL, params=full, timeout=60)
+            resp = self._session.get(BASE_URL, params=_wire_params(full), timeout=60)
             resp.raise_for_status()
             text = resp.text
             path.parent.mkdir(parents=True, exist_ok=True)
