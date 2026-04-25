@@ -214,7 +214,7 @@ dist/
 out/
 
 # Local market data cache
-data/raw/
-data/processed/
+# data/raw/
+# data/processed/
 data/canonical/
 artifacts/
