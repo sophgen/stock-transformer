@@ -1,0 +1,31 @@
+# Bulk download manifest (see docs/data_download.md)
+
+symbols_file: "configs/sp500.txt"
+# symbols: ["AAPL", "MSFT"]  # optional inline list
+
+data_types:
+  ohlcv: true
+  fundamentals: true
+  dividends: true
+  splits: true
+  macro: true
+
+output_dir: "data"
+requests_per_minute: 65
+entitlement: "delayed"
+on_error: "skip"
+stale_fallback: true
+
+cache_ttl:
+  ohlcv: 86400
+  company_overview: 604800
+  fundamentals: 2592000
+  etf_profile: 2592000
+  corporate_actions: 604800
+  macro: 86400
+
+macro:
+  treasury_yield_maturities: ["3month", "2year", "5year", "7year", "10year", "30year"]
+  treasury_yield_interval: "daily"
+  fed_funds_interval: "daily"
+  cpi_interval: "monthly"

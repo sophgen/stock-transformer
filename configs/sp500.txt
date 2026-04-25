@@ -1,0 +1,8 @@
+# Example symbol list (dot or dash class shares both work: BRK.B or BRK-B)
+# Replace with your full universe; one ticker per line.
+
+SPY
+QQQ
+AAPL
+MSFT
+GOOGL

@@ -38,7 +38,21 @@ Or with a custom config:
 python run.py -c path/to/config.yaml
 ```
 
-The first run fetches data from Alpha Vantage (5 API calls, one per symbol). All responses are cached in `data/` so subsequent runs are instant.
+The first run fetches data from Alpha Vantage (5 API calls, one per symbol). All responses are cached under `data/raw/` (see `ALPHAVANTAGE_REQUESTS_PER_MINUTE` in your environment; default 5 for free tier) so subsequent runs are instant.
+
+## Bulk download (data analysis)
+
+To pull OHLCV, fundamentals, and macro time series for a larger symbol list in an API-rate-aware way, use the manifest in `configs/download.yaml` and the helper script (see [docs/data_download.md](docs/data_download.md) for the full design):
+
+```bash
+python scripts/download_data.py --dry-run
+python scripts/download_data.py -c configs/download.yaml
+python scripts/download_data.py --retry-errors
+python scripts/download_data.py --no-cache
+python scripts/download_data.py --symbols AAPL,MSFT,GOOGL
+```
+
+Parquet exports are written to `data/processed/`.
 
 ## Configuration
 
