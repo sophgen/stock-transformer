@@ -146,10 +146,11 @@ def run_download(
 | `dividends.parquet` | `(symbol, ex_dividend_date)` |
 | `splits.parquet` | `(symbol, effective_date)` |
 | `treasury_yield.parquet` | `(maturity, date)` |
+| Other macro parquets (`real_gdp.parquet`, `cpi.parquet`, …) | `(date)` |
 
 Violations halt loudly (data integrity bug worth fixing).
 
-**Per-symbol error tolerance.** Each call wrapped in try/except. Errors logged to `data/processed/_errors_{run_id}.json`; `_errors_latest.json` mirrors the latest run. `--retry-errors` reads `_errors_latest.json` and only retries those (symbol, endpoint) pairs.
+**Per-symbol error tolerance.** Each call wrapped in try/except. Errors logged to `data/processed/_errors_{run_id}.json`; `_errors_latest.json` mirrors the latest run. Each entry stores `function`, `symbol` (may be `null` for macro), `error_class`, `error_message`, `timestamp`, and `params` — the exact request payload, so any failure (including macro endpoints like `TREASURY_YIELD` with a specific `maturity`) can be replayed verbatim. `--retry-errors` reads `_errors_latest.json` and replays each entry using its stored params, falling back to symbol-based defaults for older logs that pre-date the `params` field. The synthetic `RUN`/`KeyboardInterrupt` marker written on SIGINT is skipped during retry.
 
 **Logging.** `logging.getLogger("av_download")` at INFO. Two handlers: stderr (one line per call: `[i/N] symbol endpoint cache_status eta`) and per-run file `data/processed/_run_{run_id}.log`. The `DownloadSummary` is appended to the log at end-of-run.
 
@@ -255,11 +256,16 @@ data/
       dividends.parquet
       splits.parquet
     macro/
-      gdp.parquet
+      real_gdp.parquet
+      real_gdp_per_capita.parquet
+      inflation.parquet
+      retail_sales.parquet
+      durables.parquet
+      unemployment.parquet
+      nonfarm_payroll.parquet
       cpi.parquet
+      federal_funds_rate.parquet
       treasury_yield.parquet              # long: maturity, date, value
-      fed_funds_rate.parquet
-      ...
     _universe_split.json
     _errors_{run_id}.json
     _errors_latest.json

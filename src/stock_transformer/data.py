@@ -317,6 +317,7 @@ class AlphaVantageClient:
         params: dict[str, Any],
         *,
         max_age_sec: float | None = None,
+        stale_fallback: bool = True,
         no_cache: bool = False,
     ) -> str:
         if not self.api_key:
@@ -324,22 +325,35 @@ class AlphaVantageClient:
                 "Missing ALPHAVANTAGE_API_KEY. "
                 "Copy .env.example to .env and set your key."
             )
+        self._last_stale_fallback = False
+        self._last_cache_hit = False
         full = {"function": function, "apikey": self.api_key, **params}
         path = _raw_path_csv(self.cache_root, function, full)
 
         if not no_cache and path.is_file():
             if max_age_sec is None:
+                self._last_cache_hit = True
                 return path.read_text(encoding="utf-8")
             if self._cache_fresh(path, max_age_sec):
+                self._last_cache_hit = True
                 return path.read_text(encoding="utf-8")
 
-        self._limiter.acquire()
-        resp = self._session.get(BASE_URL, params=full, timeout=60)
-        resp.raise_for_status()
-        text = resp.text
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write_cache(path, text)
-        return text
+        try:
+            self._limiter.acquire()
+            resp = self._session.get(BASE_URL, params=full, timeout=60)
+            resp.raise_for_status()
+            text = resp.text
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write_cache(path, text)
+            return text
+        except Exception as e:  # noqa: BLE001 — stale fallback
+            if stale_fallback and path.is_file():
+                _log.warning(
+                    "Stale CSV cache fallback for %s: %s", path.name, e
+                )
+                self._last_stale_fallback = True
+                return path.read_text(encoding="utf-8")
+            raise
 
 
 def _parse_daily(payload: dict[str, Any]) -> pd.DataFrame:

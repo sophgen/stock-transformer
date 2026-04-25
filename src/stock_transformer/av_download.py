@@ -35,6 +35,52 @@ _log = logging.getLogger("av_download")
 _interrupt_flag = False
 _handler_installed = False
 
+_FUNDAMENTAL_FNS: frozenset[str] = frozenset(
+    {"INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW", "EARNINGS"}
+)
+_NEEDS_ENTITLEMENT: frozenset[str] = frozenset(
+    {"TIME_SERIES_DAILY_ADJUSTED", "COMPANY_OVERVIEW"}
+)
+_MACRO_FNS: frozenset[str] = frozenset(
+    {
+        "REAL_GDP", "REAL_GDP_PER_CAPITA", "INFLATION", "RETAIL_SALES",
+        "DURABLES", "UNEMPLOYMENT", "NONFARM_PAYROLL", "CPI",
+        "FEDERAL_FUNDS_RATE", "TREASURY_YIELD",
+    }
+)
+
+
+def _ttl_for(fn: str, ttl: dict[str, float]) -> float:
+    if fn == "TIME_SERIES_DAILY_ADJUSTED":
+        return ttl["ohlcv"]
+    if fn == "COMPANY_OVERVIEW":
+        return ttl["company_overview"]
+    if fn in _FUNDAMENTAL_FNS:
+        return ttl["fundamentals"]
+    if fn == "ETF_PROFILE":
+        return ttl["etf_profile"]
+    if fn in {"DIVIDENDS", "SPLITS"}:
+        return ttl["corporate_actions"]
+    if fn in _MACRO_FNS:
+        return ttl["macro"]
+    return 86400.0
+
+
+def _default_params_for(fn: str, sym: str | None) -> dict[str, Any]:
+    if fn == "TIME_SERIES_DAILY_ADJUSTED":
+        return {"symbol": sym, "outputsize": "full", "datatype": "json"}
+    if fn in _FUNDAMENTAL_FNS | {"COMPANY_OVERVIEW", "ETF_PROFILE",
+                                  "DIVIDENDS", "SPLITS"}:
+        return {"symbol": sym, "datatype": "json"}
+    return {"datatype": "json"}
+
+
+def _macro_stem_from_params(fn: str, params: dict[str, Any]) -> str:
+    if fn == "TREASURY_YIELD":
+        mat = str(params.get("maturity", "")).strip() or "unknown"
+        return f"treasury_yield_{mat}"
+    return fn.lower()
+
 
 def _new_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -384,8 +430,10 @@ def phase4_write_parquet(root: Path) -> list[Path]:
             if is_tr and "maturity" in mdf0.columns and "date" in mdf0.columns:
                 t_all.append(mdf0)
             else:
-                safe = re.sub(r"[^a-zA-Z0-9_]+", "_", stem)[:100] + ".parquet"
-                pth0 = tmac / safe
+                safe_stem = re.sub(r"[^a-zA-Z0-9_]+", "_", stem)[:100]
+                if "date" in mdf0.columns:
+                    assert_unique(mdf0, ["date"], f"macro:{safe_stem}")
+                pth0 = tmac / f"{safe_stem}.parquet"
                 mdf0.to_parquet(pth0, index=False)
                 written.append(pth0)
     if t_all:
@@ -417,16 +465,23 @@ def _q(
     )
 
 
-def _q_err(st: _RunState, sym: str | None, fn: str, e: Exception) -> None:
-    st.err_rows.append(
-        {
-            "symbol": sym,
-            "function": fn,
-            "error_class": type(e).__name__,
-            "error_message": str(e),
-            "timestamp": time.time(),
-        }
-    )
+def _q_err(
+    st: _RunState,
+    sym: str | None,
+    fn: str,
+    e: Exception,
+    params: dict[str, Any] | None = None,
+) -> None:
+    row: dict[str, Any] = {
+        "symbol": sym,
+        "function": fn,
+        "error_class": type(e).__name__,
+        "error_message": str(e),
+        "timestamp": time.time(),
+    }
+    if params is not None:
+        row["params"] = params
+    st.err_rows.append(row)
 
 
 def run_download(
@@ -566,65 +621,80 @@ def _run_download_body(
         _log.warning("retry_errors but _errors_latest.json empty or missing")
 
     if retry_errors and retry_list:
-        for r in retry_list:
-            fn = r.get("function", "")
+        n_retry = len(retry_list)
+        for i, r in enumerate(retry_list, start=1):
+            if _interrupt_flag:
+                break
+            fn = str(r.get("function", ""))
             sym = r.get("symbol")
-            if not sym or not fn:
+            if not fn or fn == "RUN":
                 continue
+            params_log = r.get("params")
+            if isinstance(params_log, dict) and params_log:
+                p = dict(params_log)
+            elif sym:
+                p = _default_params_for(fn, str(sym))
+            elif fn in _MACRO_FNS:
+                p = _default_params_for(fn, None)
+            else:
+                continue
+            params = {**p, **ent} if fn in _NEEDS_ENTITLEMENT else p
+            max_age = _ttl_for(fn, ttl)
             try:
-                p = {
-                    "TIME_SERIES_DAILY_ADJUSTED": {
-                        "symbol": sym, "outputsize": "full", "datatype": "json",
-                    },
-                    "COMPANY_OVERVIEW": {"symbol": sym, "datatype": "json"},
-                    "INCOME_STATEMENT": {"symbol": sym, "datatype": "json"},
-                    "BALANCE_SHEET": {"symbol": sym, "datatype": "json"},
-                    "CASH_FLOW": {"symbol": sym, "datatype": "json"},
-                    "EARNINGS": {"symbol": sym, "datatype": "json"},
-                    "ETF_PROFILE": {"symbol": sym, "datatype": "json"},
-                    "DIVIDENDS": {"symbol": sym, "datatype": "json"},
-                    "SPLITS": {"symbol": sym, "datatype": "json"},
-                }[fn]
-            except KeyError:
-                p = {"symbol": sym, "datatype": "json"}
-            tmap = {
-                "TIME_SERIES_DAILY_ADJUSTED": ttl["ohlcv"],
-                "COMPANY_OVERVIEW": ttl["company_overview"],
-                "INCOME_STATEMENT": ttl["fundamentals"],
-                "BALANCE_SHEET": ttl["fundamentals"],
-                "CASH_FLOW": ttl["fundamentals"],
-                "EARNINGS": ttl["fundamentals"],
-                "ETF_PROFILE": ttl["etf_profile"],
-                "DIVIDENDS": ttl["corporate_actions"],
-                "SPLITS": ttl["corporate_actions"],
-            }.get(fn, 86400.0)
-            _NEEDS_ENTITLEMENT = {"TIME_SERIES_DAILY_ADJUSTED", "COMPANY_OVERVIEW"}
-            try:
-                params = {**p, **ent} if fn in _NEEDS_ENTITLEMENT else p
-                _q(client, st, fn, params, tmap)
+                pld = _q(client, st, fn, params, max_age)
                 _record(st, client)
+                status = "hit" if client.last_cache_hit else (
+                    "stale" if client.last_stale_fallback else "fetch"
+                )
+                _log.info(
+                    "[retry %d/%d] %s %s %s",
+                    i, n_retry, sym or "-", fn, status,
+                )
+                if fn in _MACRO_FNS:
+                    mdir2 = out_root / "raw" / "macro"
+                    mdir2.mkdir(parents=True, exist_ok=True)
+                    stem0 = _macro_stem_from_params(fn, params)
+                    (mdir2 / f"{stem0}.json").write_text(
+                        json.dumps(pld), encoding="utf-8"
+                    )
             except Exception as e:  # noqa: BLE001
-                _q_err(st, str(sym), str(fn), e)
-        paths = phase4_write_parquet(out_root)
+                _log.warning(
+                    "[retry %d/%d] %s %s error: %s",
+                    i, n_retry, sym or "-", fn, e,
+                )
+                _q_err(
+                    st, str(sym) if sym else None, fn, e, params=params,
+                )
+        if not _interrupt_flag:
+            paths = phase4_write_parquet(out_root)
+        else:
+            paths = []
         elapsed = time.time() - t0
         _write_file_errors(st, proc)
         return DownloadSummary(
             run_id=run_id, elapsed_sec=elapsed, calls_made=st.calls_made,
             cache_hits=st.cache_hits, stale_fallbacks=st.stale_fallbacks,
             errors=len(st.err_rows), output_paths=tuple(paths),
+            interrupted=bool(_interrupt_flag),
             on_error=on_err,
         )
 
-    def _w(fn: str, sym0: str | None, e: Exception) -> None:
-        st.err_rows.append(
-            {
-                "symbol": sym0,
-                "function": fn,
-                "error_class": type(e).__name__,
-                "error_message": str(e),
-                "timestamp": time.time(),
-            }
-        )
+    def _w(
+        fn: str,
+        sym0: str | None,
+        e: Exception,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        row: dict[str, Any] = {
+            "symbol": sym0,
+            "function": fn,
+            "error_class": type(e).__name__,
+            "error_message": str(e),
+            "timestamp": time.time(),
+        }
+        if params is not None:
+            row["params"] = params
+        st.err_rows.append(row)
         if on_err == "skip":
             _log.warning("skip %s %s: %s", fn, sym0, e)
         else:
@@ -649,10 +719,11 @@ def _run_download_body(
         for s in syms:
             if _interrupt_flag:
                 break
+            params_co = {"symbol": s, "datatype": "json", **ent}
             try:
                 pld = _q(
                     client, st, "COMPANY_OVERVIEW",
-                    {"symbol": s, "datatype": "json", **ent},
+                    params_co,
                     ttl["company_overview"],
                 )
                 _record(st, client)
@@ -660,7 +731,7 @@ def _run_download_body(
                 split[s] = str(detect_asset_type(pld))
             except Exception as e:  # noqa: BLE001
                 _progress(s, "COMPANY_OVERVIEW", "error")
-                _w("COMPANY_OVERVIEW", s, e)
+                _w("COMPANY_OVERVIEW", s, e, params=params_co)
         sp_path = proc / "_universe_split.json"
         out_split = {
             "Common Stock": [x for x, v in split.items() if v == "Common Stock"],
@@ -679,19 +750,20 @@ def _run_download_body(
             break
         if not (types or {}).get("ohlcv", True):
             continue
+        params_ts = {
+            "symbol": s, "outputsize": "full", "datatype": "json", **ent
+        }
         try:
             _q(
                 client, st, "TIME_SERIES_DAILY_ADJUSTED",
-                {
-                    "symbol": s, "outputsize": "full", "datatype": "json", **ent
-                },
+                params_ts,
                 ttl["ohlcv"],
             )
             _record(st, client)
             _progress(s, "OHLCV", "hit" if client.last_cache_hit else "fetch")
         except Exception as e:  # noqa: BLE001
             _progress(s, "OHLCV", "error")
-            _w("TIME_SERIES_DAILY_ADJUSTED", s, e)
+            _w("TIME_SERIES_DAILY_ADJUSTED", s, e, params=params_ts)
 
     for s in syms:
         if _interrupt_flag:
@@ -703,56 +775,60 @@ def _run_download_body(
                 "CASH_FLOW",
                 "EARNINGS",
             ):
+                params_fn = {"symbol": s, "datatype": "json"}
                 try:
                     _q(
-                        client, st, fna, {"symbol": s, "datatype": "json"},
+                        client, st, fna, params_fn,
                         ttl["fundamentals"],
                     )
                     _record(st, client)
                     _progress(s, fna, "hit" if client.last_cache_hit else "fetch")
                 except Exception as e:  # noqa: BLE001
                     _progress(s, fna, "error")
-                    _w(fna, s, e)
+                    _w(fna, s, e, params=params_fn)
         elif f_type and split.get(s) == "ETF":
+            params_etf = {"symbol": s, "datatype": "json"}
             try:
                 _q(
                     client, st, "ETF_PROFILE",
-                    {"symbol": s, "datatype": "json"},
+                    params_etf,
                     ttl["etf_profile"],
                 )
                 _record(st, client)
                 _progress(s, "ETF_PROFILE", "hit" if client.last_cache_hit else "fetch")
             except Exception as e:  # noqa: BLE001
                 _progress(s, "ETF_PROFILE", "error")
-                _w("ETF_PROFILE", s, e)
+                _w("ETF_PROFILE", s, e, params=params_etf)
 
     for s in syms:
         if _interrupt_flag:
             break
         if types.get("dividends", True):
+            params_div = {"symbol": s, "datatype": "json"}
             try:
                 _q(
                     client, st, "DIVIDENDS",
-                    {"symbol": s, "datatype": "json"},
+                    params_div,
                     ttl["corporate_actions"],
                 )
                 _record(st, client)
                 _progress(s, "DIVIDENDS", "hit" if client.last_cache_hit else "fetch")
             except Exception as e:  # noqa: BLE001
                 _progress(s, "DIVIDENDS", "error")
-                _w("DIVIDENDS", s, e)
+                _w("DIVIDENDS", s, e, params=params_div)
         if types.get("splits", True):
+            params_sp = {"symbol": s, "datatype": "json"}
             try:
                 _q(
                     client, st, "SPLITS",
-                    {"symbol": s, "datatype": "json"},
+                    params_sp,
                     ttl["corporate_actions"],
                 )
                 _record(st, client)
                 _progress(s, "SPLITS", "hit" if client.last_cache_hit else "fetch")
             except Exception as e:  # noqa: BLE001
                 _progress(s, "SPLITS", "error")
-                _w("SPLITS", s, e)
+                _w("SPLITS", s, e, params=params_sp)
 
     if types.get("macro", True) and not _interrupt_flag:
         mdir2 = out_root / "raw" / "macro"
@@ -774,7 +850,7 @@ def _run_download_body(
                 )
             except Exception as e:  # noqa: BLE001
                 _progress(None, fn0, "error")
-                _w(fn0, None, e)
+                _w(fn0, None, e, params=p0)
 
     if not _interrupt_flag:
         paths = phase4_write_parquet(out_root)

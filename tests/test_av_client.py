@@ -210,6 +210,31 @@ def test_ttl_none_keeps_old_cache_forever(tmp_path: Path) -> None:
 
 
 @mock.patch.dict(os.environ, {"ALPHAVANTAGE_API_KEY": "k"})
+def test_query_csv_stale_fallback_on_failure(tmp_path: Path) -> None:
+    from stock_transformer.data import _raw_path_csv
+
+    full = {"function": "LISTING_STATUS", "apikey": "k"}
+    path = _raw_path_csv(tmp_path, "LISTING_STATUS", full)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("symbol,name\nAAPL,Apple\n", encoding="utf-8")
+    os.utime(path, (0, 0))
+
+    c = AlphaVantageClient(
+        cache_dir=tmp_path,
+        requests_per_minute=100,
+        wall_time=lambda: 1e9,
+    )
+    c._session.get = mock.MagicMock(  # type: ignore[method-assign]
+        side_effect=requests.exceptions.ConnectionError("no net")
+    )
+    txt = c.query_csv(
+        "LISTING_STATUS", {}, max_age_sec=1, stale_fallback=True
+    )
+    assert "AAPL" in txt
+    assert c.last_stale_fallback is True
+
+
+@mock.patch.dict(os.environ, {"ALPHAVANTAGE_API_KEY": "k"})
 def test_transient_5xx_retries_and_succeeds(tmp_path: Path) -> None:
     c = AlphaVantageClient(
         cache_dir=tmp_path, requests_per_minute=200,
