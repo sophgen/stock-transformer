@@ -218,3 +218,8 @@ out/
 # data/processed/
 data/canonical/
 artifacts/
+
+# Bulk-download per-run telemetry (regenerated each run; not data)
+data/processed/_stdout*.log
+data/processed/_errors_*.json
+data/processed/_errors_latest.json
