@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import signal
 from pathlib import Path
 from textwrap import dedent
 from unittest import mock
@@ -14,7 +13,6 @@ from stock_transformer.av_download import (
     _default_params_for,
     _macro_stem_from_params,
     _ttl_for,
-    _write_file_errors,
     load_symbol_list,
     normalize_symbol,
     phase4_write_parquet,
@@ -31,7 +29,7 @@ def test_config_loader_normalizes_class_shares() -> None:
     assert t == ["BRK-B", "AAPL"]
 
 
-def test_dry_run_planned(tmp_path: Path) -> None:
+def test_dry_run_makes_no_api_calls(tmp_path: Path) -> None:
     cfgp = tmp_path / "c.yaml"
     cfgp.write_text(
         dedent(
@@ -53,7 +51,7 @@ def test_dry_run_planned(tmp_path: Path) -> None:
     assert s.calls_made == 0
 
 
-def test_phase4_idempotent_ohlcv(tmp_path: Path) -> None:
+def test_phase4_idempotent_when_rerun_with_same_cache(tmp_path: Path) -> None:
     d = tmp_path / "d"
     raw = d / "raw" / "time_series_daily_adjusted"
     raw.mkdir(parents=True)
@@ -193,6 +191,28 @@ def test_default_params_and_macro_stem() -> None:
         "TREASURY_YIELD", {"datatype": "json", "interval": "daily", "maturity": "10year"}
     ) == "treasury_yield_10year"
     assert _macro_stem_from_params("CPI", {"interval": "monthly"}) == "cpi"
+
+
+def test_default_params_macro_required_keys() -> None:
+    """Legacy logs that pre-date ``params`` retry with macro-aware fallbacks."""
+    ty = _default_params_for("TREASURY_YIELD", None)
+    assert ty["interval"] == "daily"
+    assert ty["maturity"] == "10year"
+    assert _default_params_for("FEDERAL_FUNDS_RATE", None)["interval"] == "daily"
+    assert _default_params_for("CPI", None)["interval"] == "monthly"
+
+
+def test_atomic_write_json_no_partial_on_failure(tmp_path: Path) -> None:
+    """A failed atomic write must not leave a partial macro JSON behind."""
+    from stock_transformer.av_download import _atomic_write_json
+
+    target = tmp_path / "raw" / "macro" / "real_gdp.json"
+    bad_payload = {"x": object()}  # not JSON-serializable -> json.dumps raises
+    with pytest.raises(TypeError):
+        _atomic_write_json(target, bad_payload)
+    assert not target.exists()
+    leftovers = list(target.parent.rglob("*.tmp"))
+    assert leftovers == []
 
 
 def test_phase4_macro_pk_uniqueness(tmp_path: Path) -> None:

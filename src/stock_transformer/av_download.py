@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import signal
 import time
@@ -28,6 +29,21 @@ from stock_transformer.av_parsers import (
     parse_splits,
 )
 from stock_transformer.data import AlphaVantageClient
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    """Write JSON to ``path`` atomically via tmp + ``os.replace``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f"{path.name}.tmp"
+    try:
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 OnError = Literal["skip", "abort"]
 
@@ -72,6 +88,15 @@ def _default_params_for(fn: str, sym: str | None) -> dict[str, Any]:
     if fn in _FUNDAMENTAL_FNS | {"COMPANY_OVERVIEW", "ETF_PROFILE",
                                   "DIVIDENDS", "SPLITS"}:
         return {"symbol": sym, "datatype": "json"}
+    # Macro endpoints with required params: spec defaults from
+    # configs/download.yaml::macro. Used as a fallback when retrying
+    # an old error log entry that pre-dates the ``params`` field.
+    if fn == "TREASURY_YIELD":
+        return {"datatype": "json", "interval": "daily", "maturity": "10year"}
+    if fn == "FEDERAL_FUNDS_RATE":
+        return {"datatype": "json", "interval": "daily"}
+    if fn == "CPI":
+        return {"datatype": "json", "interval": "monthly"}
     return {"datatype": "json"}
 
 
@@ -652,11 +677,8 @@ def _run_download_body(
                 )
                 if fn in _MACRO_FNS:
                     mdir2 = out_root / "raw" / "macro"
-                    mdir2.mkdir(parents=True, exist_ok=True)
                     stem0 = _macro_stem_from_params(fn, params)
-                    (mdir2 / f"{stem0}.json").write_text(
-                        json.dumps(pld), encoding="utf-8"
-                    )
+                    _atomic_write_json(mdir2 / f"{stem0}.json", pld)
             except Exception as e:  # noqa: BLE001
                 _log.warning(
                     "[retry %d/%d] %s %s error: %s",
@@ -832,7 +854,6 @@ def _run_download_body(
 
     if types.get("macro", True) and not _interrupt_flag:
         mdir2 = out_root / "raw" / "macro"
-        mdir2.mkdir(parents=True, exist_ok=True)
         for job in _macro_jobs_from_config(cfg):
             if _interrupt_flag:
                 break
@@ -845,9 +866,7 @@ def _run_download_body(
                 _record(st, client)
                 _progress(None, fn0, "hit" if client.last_cache_hit else "fetch")
                 stem0 = str(job.get("out_stem", fn0))
-                (mdir2 / f"{stem0}.json").write_text(
-                    json.dumps(pld), encoding="utf-8"
-                )
+                _atomic_write_json(mdir2 / f"{stem0}.json", pld)
             except Exception as e:  # noqa: BLE001
                 _progress(None, fn0, "error")
                 _w(fn0, None, e, params=p0)

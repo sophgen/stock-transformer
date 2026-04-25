@@ -50,7 +50,7 @@ def test_rate_limiter_third_needs_sleeper() -> None:
     assert t > before or sleeps
 
 
-def test_rate_limit_premium_message() -> None:
+def test_rate_limit_detection_matches_premium_message() -> None:
     p: dict = {
         "Information": "Our standard API call frequency is 75 requests per minute"
     }
@@ -77,7 +77,7 @@ def test_symbol_prefix_in_raw_path() -> None:
     AlphaVantageClient, "_fetch_from_network", side_effect=OSError("no net")
 )
 @mock.patch.dict(os.environ, {"ALPHAVANTAGE_API_KEY": "x"})
-def test_stale_cache_on_fetch_failure(
+def test_stale_fallback_on_refetch_failure(
     m_fetch: Any, tmp_path: Path
 ) -> None:
     full = {"function": "DEMO", "apikey": "x", "symbol": "Z", "a": 1}

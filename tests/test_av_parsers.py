@@ -15,7 +15,7 @@ from stock_transformer.av_parsers import (
 )
 
 
-def test_parse_income_coerces_string_none() -> None:
+def test_parse_income_statement_coerces_string_None_to_NaN() -> None:
     pld: dict = {
         "symbol": "X",
         "annualReports": [
@@ -33,11 +33,11 @@ def test_parse_income_coerces_string_none() -> None:
     assert float(df["totalRevenue"].iloc[0]) == 100.0
 
 
-def test_empty_company_overview() -> None:
+def test_parse_company_overview_returns_empty_for_empty_payload() -> None:
     assert parse_company_overview({}, "X").empty
 
 
-def test_detect_asset_etf() -> None:
+def test_detect_asset_type_etf_vs_stock() -> None:
     assert (
         detect_asset_type({"AssetType": "ETF"})  # type: ignore[arg-type]
         == "ETF"
@@ -78,7 +78,7 @@ def test_parse_earnings_annual_rows_have_nan_surprise() -> None:
     assert float(qtr["surprise"]) == pytest.approx(0.1)
 
 
-def test_treasury_macro_maturity_stem() -> None:
+def test_parse_macro_treasury_yield_long_format() -> None:
     pld: dict = {
         "name": "3-Month Treasury",
         "data": [{"date": "2020-01-15", "value": "0.1"}],
