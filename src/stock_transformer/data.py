@@ -74,7 +74,7 @@ def _is_rate_limit(payload: dict[str, Any]) -> bool:
             return True
         if "requests per minute" in lower or "api rate limit" in lower:
             return True
-        if "premium membership" in lower and "call frequency" in lower:
+        if "premium membership" in lower:
             return True
         if "api rate" in lower or "rate limit" in lower:
             return True
@@ -85,8 +85,10 @@ def _information_suggests_rate_limit(payload: dict[str, Any]) -> bool:
     inf = payload.get("Information")
     if not isinstance(inf, str):
         return False
-    l = inf.lower()
-    return "min" in l and ("api" in l or "request" in l or "call" in l)
+    low = inf.lower()
+    if "rate" in low or "quota" in low:
+        return True
+    return "min" in low and ("api" in low or "request" in low or "call" in low)
 
 
 class SlidingWindowRateLimiter:
@@ -193,8 +195,15 @@ class AlphaVantageClient:
 
     def _atomic_write_cache(self, path: Path, text: str) -> None:
         tmp = path.parent / f"{path.name}.tmp"
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def _cache_fresh(self, path: Path, max_age_sec: float) -> bool:
         """True if the file is newer than ``max_age_sec`` (in seconds)."""

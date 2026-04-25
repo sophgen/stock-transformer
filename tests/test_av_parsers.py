@@ -48,7 +48,7 @@ def test_detect_asset_etf() -> None:
     )
 
 
-def test_parse_earnings_annual_zero_surprise() -> None:
+def test_parse_earnings_annual_rows_have_nan_surprise() -> None:
     pld: dict = {
         "symbol": "X",
         "annualEarnings": [
@@ -59,13 +59,23 @@ def test_parse_earnings_annual_zero_surprise() -> None:
                 "fiscalDateEnding": "2020-12-31",
                 "reportedEPS": "0.5",
                 "estimatedEPS": "0.4",
+                "surprise": "0.1",
+                "surprisePercentage": "25.0",
             }
         ],
     }
     df = parse_earnings(pld, "X")
-    a = df[df["frequency"] == "annual"].iloc[0]
-    # surprise fields may be absent/NaN for annual
-    assert a["symbol"] == "X"
+    annual = df[df["frequency"] == "annual"].iloc[0]
+    assert annual["symbol"] == "X"
+    # Annual rows should not have surprise fields (NaN or absent)
+    for col in ("estimatedEPS", "surprise", "surprisePercentage"):
+        if col in df.columns:
+            assert pd.isna(annual[col]), f"Expected NaN for annual '{col}'"
+
+    # Quarterly should have them populated
+    qtr = df[df["frequency"] == "quarterly"].iloc[0]
+    assert float(qtr["estimatedEPS"]) == pytest.approx(0.4)
+    assert float(qtr["surprise"]) == pytest.approx(0.1)
 
 
 def test_treasury_macro_maturity_stem() -> None:

@@ -481,6 +481,10 @@ def run_download(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
     _log.addHandler(fh)
+    sh = logging.StreamHandler()
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(logging.Formatter("%(message)s"))
+    _log.addHandler(sh)
     _log.setLevel(logging.DEBUG)
 
     if not _handler_installed:
@@ -591,6 +595,20 @@ def run_download(
             _log.error("abort on %s %s: %s", fn, sym0, e)
             raise e
 
+    _call_i = 0
+
+    def _progress(sym: str | None, endpoint: str, status: str) -> None:
+        nonlocal _call_i
+        _call_i += 1
+        elapsed_so_far = time.time() - t0
+        if _call_i > 1 and elapsed_so_far > 0:
+            eta_sec = elapsed_so_far / (_call_i - 1) * max(planned - _call_i, 0)
+            eta_m = eta_sec / 60
+            eta_str = f"eta {eta_m:.0f}m"
+        else:
+            eta_str = "eta --"
+        _log.info("[%d/%d] %s %s %s %s", _call_i, planned, sym or "-", endpoint, status, eta_str)
+
     if f_type and not _interrupt_flag:
         for s in syms:
             if _interrupt_flag:
@@ -602,8 +620,10 @@ def run_download(
                     ttl["company_overview"],
                 )
                 _record(st, client)
+                _progress(s, "COMPANY_OVERVIEW", "hit" if client.last_cache_hit else "fetch")
                 split[s] = str(detect_asset_type(pld))
             except Exception as e:  # noqa: BLE001
+                _progress(s, "COMPANY_OVERVIEW", "error")
                 _w("COMPANY_OVERVIEW", s, e)
         sp_path = proc / "_universe_split.json"
         out_split = {
@@ -632,7 +652,9 @@ def run_download(
                 ttl["ohlcv"],
             )
             _record(st, client)
+            _progress(s, "OHLCV", "hit" if client.last_cache_hit else "fetch")
         except Exception as e:  # noqa: BLE001
+            _progress(s, "OHLCV", "error")
             _w("TIME_SERIES_DAILY_ADJUSTED", s, e)
 
     for s in syms:
@@ -651,7 +673,9 @@ def run_download(
                         ttl["fundamentals"],
                     )
                     _record(st, client)
+                    _progress(s, fna, "hit" if client.last_cache_hit else "fetch")
                 except Exception as e:  # noqa: BLE001
+                    _progress(s, fna, "error")
                     _w(fna, s, e)
         elif f_type and split.get(s) == "ETF":
             try:
@@ -661,7 +685,9 @@ def run_download(
                     ttl["etf_profile"],
                 )
                 _record(st, client)
+                _progress(s, "ETF_PROFILE", "hit" if client.last_cache_hit else "fetch")
             except Exception as e:  # noqa: BLE001
+                _progress(s, "ETF_PROFILE", "error")
                 _w("ETF_PROFILE", s, e)
 
     for s in syms:
@@ -675,7 +701,9 @@ def run_download(
                     ttl["corporate_actions"],
                 )
                 _record(st, client)
+                _progress(s, "DIVIDENDS", "hit" if client.last_cache_hit else "fetch")
             except Exception as e:  # noqa: BLE001
+                _progress(s, "DIVIDENDS", "error")
                 _w("DIVIDENDS", s, e)
         if types.get("splits", True):
             try:
@@ -685,7 +713,9 @@ def run_download(
                     ttl["corporate_actions"],
                 )
                 _record(st, client)
+                _progress(s, "SPLITS", "hit" if client.last_cache_hit else "fetch")
             except Exception as e:  # noqa: BLE001
+                _progress(s, "SPLITS", "error")
                 _w("SPLITS", s, e)
 
     if types.get("macro", True) and not _interrupt_flag:
@@ -701,11 +731,13 @@ def run_download(
                     client, st, fn0, p0, ttl["macro"],
                 )
                 _record(st, client)
+                _progress(None, fn0, "hit" if client.last_cache_hit else "fetch")
                 stem0 = str(job.get("out_stem", fn0))
                 (mdir2 / f"{stem0}.json").write_text(
                     json.dumps(pld), encoding="utf-8"
                 )
             except Exception as e:  # noqa: BLE001
+                _progress(None, fn0, "error")
                 _w(fn0, None, e)
 
     if not _interrupt_flag:
@@ -728,6 +760,9 @@ def run_download(
             f"\nSummary: {st.calls_made=}, {st.cache_hits=}, "
             f"{st.stale_fallbacks=}, errors={len(st.err_rows)} paths={paths}\n"
         )
+    _log.removeHandler(fh)
+    _log.removeHandler(sh)
+    fh.close()
     return DownloadSummary(
         run_id=run_id,
         elapsed_sec=elapsed,
