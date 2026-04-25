@@ -96,6 +96,20 @@ def test_stale_cache_on_fetch_failure(
 
 
 @mock.patch.dict(os.environ, {"ALPHAVANTAGE_API_KEY": "k"})
+def test_atomic_cache_write_no_partial_file(tmp_path: Path) -> None:
+    c = AlphaVantageClient(
+        cache_dir=tmp_path, requests_per_minute=100, wall_time=lambda: 0.0
+    )
+    payload = {"ok": True}
+    with mock.patch.object(c, "_fetch_from_network", return_value=payload):
+        c.query("DEMO", {"symbol": "Z"}, max_age_sec=None)
+    tmps = list((tmp_path / "raw").rglob("*.tmp"))
+    assert tmps == [], f"Leftover .tmp files: {tmps}"
+    cached = list((tmp_path / "raw").rglob("*.json"))
+    assert len(cached) == 1
+
+
+@mock.patch.dict(os.environ, {"ALPHAVANTAGE_API_KEY": "k"})
 @mock.patch.object(
     AlphaVantageClient, "_atomic_write_cache", side_effect=OSError("boom")
 )

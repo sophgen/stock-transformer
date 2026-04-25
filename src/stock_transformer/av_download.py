@@ -509,7 +509,14 @@ def run_download(
         planned += len(_macro_jobs_from_config(cfg))
 
     if dry_run:
-        _log.info("dry_run planned_calls~%s (approx)", planned)
+        eta_min = planned / max(rpm, 1)
+        _log.info(
+            "dry_run planned_calls~%s (approx), estimated_time~%.0fm at %d req/min",
+            planned, eta_min, rpm,
+        )
+        _log.removeHandler(fh)
+        _log.removeHandler(sh)
+        fh.close()
         return DownloadSummary(
             run_id=run_id, elapsed_sec=0.0, calls_made=0, cache_hits=0,
             stale_fallbacks=0, errors=0, output_paths=(), planned_calls=planned,
@@ -520,11 +527,44 @@ def run_download(
         out_root, requests_per_minute=rpm
     )
 
+    try:
+        return _run_download_body(
+            client, st, cfg, syms, proc, out_root, logf,
+            ttl, ent, types, on_err, retry_errors, run_id, rpm, t0, planned,
+        )
+    finally:
+        _log.removeHandler(fh)
+        _log.removeHandler(sh)
+        fh.close()
+
+
+def _run_download_body(
+    client: AlphaVantageClient,
+    st: _RunState,
+    cfg: dict[str, Any],
+    syms: list[str],
+    proc: Path,
+    out_root: Path,
+    logf: Path,
+    ttl: dict[str, float],
+    ent: dict[str, str],
+    types: dict[str, Any],
+    on_err: OnError,
+    retry_errors: bool,
+    run_id: str,
+    rpm: int,
+    t0: float,
+    planned: int,
+) -> DownloadSummary:
+    global _interrupt_flag
+
+    f_type = bool(types.get("fundamentals", True))
+    split: dict[str, str] = {}
+
     retry_list = _load_retry(proc / "_errors_latest.json")
     if retry_errors and not retry_list:
         _log.warning("retry_errors but _errors_latest.json empty or missing")
 
-    split: dict[str, str] = {}
     if retry_errors and retry_list:
         for r in retry_list:
             fn = r.get("function", "")
@@ -558,14 +598,10 @@ def run_download(
                 "DIVIDENDS": ttl["corporate_actions"],
                 "SPLITS": ttl["corporate_actions"],
             }.get(fn, 86400.0)
+            _NEEDS_ENTITLEMENT = {"TIME_SERIES_DAILY_ADJUSTED", "COMPANY_OVERVIEW"}
             try:
-                if fn in ("SPLITS", "DIVIDENDS"):
-                    _q(client, st, fn, p, tmap)
-                else:
-                    _q(
-                        client, st, fn, {**p, **ent} if "TIME" in fn else p,
-                        tmap
-                    )
+                params = {**p, **ent} if fn in _NEEDS_ENTITLEMENT else p
+                _q(client, st, fn, params, tmap)
                 _record(st, client)
             except Exception as e:  # noqa: BLE001
                 _q_err(st, str(sym), str(fn), e)
@@ -760,9 +796,6 @@ def run_download(
             f"\nSummary: {st.calls_made=}, {st.cache_hits=}, "
             f"{st.stale_fallbacks=}, errors={len(st.err_rows)} paths={paths}\n"
         )
-    _log.removeHandler(fh)
-    _log.removeHandler(sh)
-    fh.close()
     return DownloadSummary(
         run_id=run_id,
         elapsed_sec=elapsed,
@@ -778,8 +811,6 @@ def run_download(
 
 
 def _write_file_errors(st: _RunState, proc: Path) -> None:
-    p = proc / f"_errors_{st.run_id}.json"
-    p.write_text(json.dumps(st.err_rows, indent=2, default=str), encoding="utf-8")
-    (proc / "_errors_latest.json").write_text(
-        p.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    content = json.dumps(st.err_rows, indent=2, default=str)
+    (proc / f"_errors_{st.run_id}.json").write_text(content, encoding="utf-8")
+    (proc / "_errors_latest.json").write_text(content, encoding="utf-8")
